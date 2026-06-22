@@ -403,6 +403,137 @@ fn extract_pack_dds(app: &AppHandle, input_root: &Path) -> Vec<String> {
     out
 }
 
+const OBJ_GIF_FRAMES: u32 = 24;
+const OBJ_GIF_TOTAL_MS: u32 = 2000;
+
+/// Render one group of object `.ydr` files into `tex_dir` with its own fresh
+/// worker pool, returning `(processed, failed, manifest_entries)`. Progress is
+/// reported against the whole run: `base_done` is the number of items finished
+/// in earlier groups and `grand_total` the run-wide total.
+#[allow(clippy::too_many_arguments)]
+fn render_object_group(
+    app: &AppHandle,
+    blender: &Path,
+    script: &Path,
+    ydrs: &[PathBuf],
+    root: &Path,
+    tex_dir: &Path,
+    ext: &str,
+    animate: bool,
+    config: &RenderConfig,
+    pack_dds: &[String],
+    cancel: &Arc<AtomicBool>,
+    base_done: u32,
+    grand_total: u32,
+) -> (u32, u32, Vec<PropEntry>) {
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
+    // Output file name -> source pack, for the manifest (results only carry the
+    // output path, so we map back from the file name).
+    let mut source_by_file: HashMap<String, Option<String>> = HashMap::new();
+    for ydr in ydrs {
+        let base = ydr
+            .file_stem()
+            .map(|s| s.to_string_lossy().replace('^', "_"))
+            .unwrap_or_else(|| "object".to_string());
+        let n = seen.entry(base.clone()).or_insert(0);
+        let name = if *n == 0 {
+            base.clone()
+        } else {
+            format!("{base}_{}", *n + 1)
+        };
+        *n += 1;
+        let file = format!("{name}.{ext}");
+        source_by_file.insert(file.clone(), source_label(ydr, root));
+        let out = tex_dir.join(&file);
+        let mut item = RenderItem::object(
+            ydr.to_string_lossy().to_string(),
+            pack_dds.to_vec(),
+            out.to_string_lossy().to_string(),
+        );
+        if animate {
+            item = item.with_frames(OBJ_GIF_FRAMES);
+        }
+        items.push(item);
+    }
+
+    let app_cb = app.clone();
+    let results = qendering_render::render(
+        blender,
+        script,
+        items,
+        0,
+        config.clone(),
+        move |rr, done, _total| {
+            let file = Path::new(&rr.output_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let _ = app_cb.emit(
+                "progress",
+                Progress {
+                    current: base_done + done as u32,
+                    total: grand_total,
+                    file,
+                    ok: rr.success,
+                },
+            );
+            if !rr.success {
+                if let Some(e) = &rr.error {
+                    let _ = app_cb.emit("log", format!("FAIL {}: {e}", rr.output_path));
+                }
+            }
+        },
+        Arc::clone(cancel),
+    );
+
+    let mut processed = 0u32;
+    let mut failed = 0u32;
+    let mut props: Vec<PropEntry> = Vec::new();
+    for rr in &results {
+        let out = Path::new(&rr.output_path);
+        let file = out
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let name = out
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mut ok = false;
+        if animate {
+            if rr.success && !rr.frames.is_empty() {
+                let delay = OBJ_GIF_TOTAL_MS / OBJ_GIF_FRAMES.max(1);
+                match qendering_core::texture::frames_to_gif(&rr.frames, out, 256, delay) {
+                    Ok(()) => {
+                        processed += 1;
+                        ok = true;
+                    }
+                    Err(e) => {
+                        failed += 1;
+                        let _ = app.emit("log", format!("GIF assembly failed {}: {e}", rr.output_path));
+                    }
+                }
+            } else {
+                failed += 1;
+            }
+        } else if rr.success {
+            processed += 1;
+            ok = true;
+        } else {
+            failed += 1;
+        }
+        if ok {
+            props.push(PropEntry {
+                source: source_by_file.get(&file).cloned().flatten(),
+                name,
+                file,
+            });
+        }
+    }
+    (processed, failed, props)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_objects(
     app: &AppHandle,
@@ -413,11 +544,9 @@ fn run_objects(
     elevation_deg: f64,
     animate: bool,
     subfolder: &str,
+    batch: bool,
     cancel: Arc<AtomicBool>,
 ) {
-    const GIF_FRAMES: u32 = 24;
-    const GIF_TOTAL_MS: u32 = 2000;
-
     let root = Path::new(input_dir);
     let ydrs = discover_ydr_objects(root);
     let total = ydrs.len() as u32;
@@ -465,134 +594,62 @@ fn run_objects(
     };
     let ext = if animate { "gif" } else { fmt.ext() };
 
-    let tex_dir = output_tex_dir(output_dir, subfolder);
-    let mut seen: HashMap<String, u32> = HashMap::new();
-    let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
-    // Output file name -> source pack, for the manifest (results only carry the
-    // output path, so we map back from the file name).
-    let mut source_by_file: HashMap<String, Option<String>> = HashMap::new();
-    for ydr in &ydrs {
-        let base = ydr
-            .file_stem()
-            .map(|s| s.to_string_lossy().replace('^', "_"))
-            .unwrap_or_else(|| "object".to_string());
-        let n = seen.entry(base.clone()).or_insert(0);
-        let name = if *n == 0 {
-            base.clone()
-        } else {
-            format!("{base}_{}", *n + 1)
-        };
-        *n += 1;
-        let file = format!("{name}.{ext}");
-        source_by_file.insert(file.clone(), source_label(ydr, root));
-        let out = tex_dir.join(&file);
-        let mut item = RenderItem::object(
-            ydr.to_string_lossy().to_string(),
-            pack_dds.clone(),
-            out.to_string_lossy().to_string(),
-        );
-        if animate {
-            item = item.with_frames(GIF_FRAMES);
-        }
-        items.push(item);
-    }
-
-    let app_cb = app.clone();
-    let results = qendering_render::render(
-        &blender,
-        &script,
-        items,
-        0,
-        config,
-        move |rr, done, total| {
-            let file = Path::new(&rr.output_path)
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let _ = app_cb.emit(
-                "progress",
-                Progress {
-                    current: done as u32,
-                    total: total as u32,
-                    file,
-                    ok: rr.success,
-                },
-            );
-            if !rr.success {
-                if let Some(e) = &rr.error {
-                    let _ = app_cb.emit("log", format!("FAIL {}: {e}", rr.output_path));
-                }
+    // Build the work groups. Batch mode renders each top-level pack folder in
+    // isolation (its own fresh worker pool + subfolder + manifest), so one bad
+    // pack can't crash-storm the others; otherwise it is one whole-input group.
+    let groups: Vec<(String, Vec<PathBuf>)> = if batch {
+        let mut grouped: Vec<(String, Vec<PathBuf>)> = Vec::new();
+        for ydr in &ydrs {
+            let pack = source_label(ydr, root).unwrap_or_else(|| "_loose".to_string());
+            let rel = if subfolder.is_empty() {
+                pack
+            } else {
+                format!("{subfolder}/{pack}")
+            };
+            match grouped.iter_mut().find(|(r, _)| *r == rel) {
+                Some((_, v)) => v.push(ydr.clone()),
+                None => grouped.push((rel, vec![ydr.clone()])),
             }
-        },
-        Arc::clone(&cancel),
-    );
+        }
+        let _ = app.emit("log", format!("Per-pack batch: {} pack(s).", grouped.len()));
+        grouped
+    } else {
+        vec![(subfolder.to_string(), ydrs.clone())]
+    };
+
+    let mut processed = 0u32;
+    let mut failed = 0u32;
+    let mut base_done = 0u32;
+    for (rel, group) in &groups {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let tex_dir = output_tex_dir(output_dir, rel);
+        let (p, f, props) = render_object_group(
+            app, &blender, &script, group, root, &tex_dir, ext, animate, &config, &pack_dds,
+            &cancel, base_done, total,
+        );
+        write_manifest(
+            app,
+            &manifest_path(output_dir, rel),
+            &Manifest {
+                mode: "objects".into(),
+                format: ext.to_string(),
+                count: props.len(),
+                props,
+            },
+        );
+        if batch {
+            let _ = app.emit("log", format!("Pack {rel}: {p} ok, {f} failed."));
+        }
+        processed += p;
+        failed += f;
+        base_done += group.len() as u32;
+    }
 
     if cancel.load(Ordering::Relaxed) {
         let _ = app.emit("log", "Render stopped.");
     }
-
-    // Assemble spin frames into GIFs (animate) or count stills, collecting a
-    // manifest entry for everything that ended up on disk.
-    let mut processed = 0u32;
-    let mut failed = 0u32;
-    let mut props: Vec<PropEntry> = Vec::new();
-    for rr in &results {
-        let out = Path::new(&rr.output_path);
-        let file = out
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let name = out
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let mut ok = false;
-        if animate {
-            if rr.success && !rr.frames.is_empty() {
-                let delay = GIF_TOTAL_MS / GIF_FRAMES.max(1);
-                match qendering_core::texture::frames_to_gif(
-                    &rr.frames,
-                    out,
-                    256,
-                    delay,
-                ) {
-                    Ok(()) => {
-                        processed += 1;
-                        ok = true;
-                    }
-                    Err(e) => {
-                        failed += 1;
-                        let _ = app.emit("log", format!("GIF assembly failed {}: {e}", rr.output_path));
-                    }
-                }
-            } else {
-                failed += 1;
-            }
-        } else if rr.success {
-            processed += 1;
-            ok = true;
-        } else {
-            failed += 1;
-        }
-        if ok {
-            props.push(PropEntry {
-                source: source_by_file.get(&file).cloned().flatten(),
-                name,
-                file,
-            });
-        }
-    }
-
-    write_manifest(
-        app,
-        &manifest_path(output_dir, subfolder),
-        &Manifest {
-            mode: "objects".into(),
-            format: ext.to_string(),
-            count: props.len(),
-            props,
-        },
-    );
 
     // Drop the pre-extracted pack DDS now that every worker is done with it.
     let _ = std::fs::remove_dir_all(temp_obj_dds_dir());
@@ -613,6 +670,7 @@ fn start_render(
     elevation_deg: f64,
     animate: bool,
     subfolder: String,
+    batch: bool,
 ) {
     let cancel = state.0.clone();
     cancel.store(false, Ordering::Relaxed);
@@ -627,6 +685,7 @@ fn start_render(
                 elevation_deg,
                 animate,
                 &subfolder,
+                batch,
                 cancel,
             );
         } else {

@@ -15,6 +15,9 @@
   let azimuth = $state(45);
   let elevation = $state(25);
   let animate = $state(false);
+  // Per-pack batch: render each top-level pack in its own isolated worker pool
+  // and output subfolder/manifest.
+  let batch = $state(false);
 
   let scan = $state<ScanResult | null>(null);
   let scanning = $state(false);
@@ -134,6 +137,7 @@
         elevationDeg: elevation,
         animate: mode === "objects" ? animate : false,
         subfolder,
+        batch: mode === "objects" ? batch : false,
       });
     } catch (e) {
       addLog(`Failed to start: ${e}`);
@@ -472,6 +476,16 @@
           </label>
           {#if animate}
             <div class="hint">Outputs are saved as <b>.gif</b> (azimuth is swept 360°).</div>
+          {/if}
+          <label class="check">
+            <input type="checkbox" bind:checked={batch} />
+            <span>Per-pack batch</span>
+          </label>
+          {#if batch}
+            <div class="hint">
+              Each top-level pack folder renders in its own worker pool and gets its own
+              subfolder + <b>manifest.json</b>. A crash in one pack won't stop the others.
+            </div>
           {/if}
         </section>
       {/if}
