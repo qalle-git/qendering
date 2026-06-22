@@ -15,11 +15,10 @@ latest `.exe` / `.msi`.
 
 ## Demo
 
-https://github.com/qalle-git/qendering/raw/main/docs/qendering.mp4
+<video src="https://github.com/qalle-git/qendering/raw/main/docs/qendering.webm" controls width="100%"></video>
 
-<video src="https://github.com/qalle-git/qendering/raw/main/docs/qendering.mp4" controls width="100%"></video>
-
-(If the player does not load, use the [direct link](docs/qendering.mp4).)
+[Watch the demo](https://github.com/qalle-git/qendering/raw/main/docs/qendering.webm)
+if the player does not load.
 
 ## Features
 
