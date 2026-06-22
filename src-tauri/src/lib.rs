@@ -108,6 +108,76 @@ fn output_tex_dir(output_dir: &str, subfolder: &str) -> PathBuf {
     base.join("textures")
 }
 
+// ---------------------------------------------------------------------------
+// manifest (machine-readable list of what a render produced)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PropEntry {
+    /// Output basename without extension — also the CDN image name.
+    name: String,
+    /// Rendered file name (with extension), relative to the textures folder.
+    file: String,
+    /// Top-level source folder (pack/DLC) the model came from, if resolvable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Manifest {
+    /// `"clothing"` or `"objects"`.
+    mode: String,
+    /// Output format the files were written in (`webp` / `png` / `jpg` / `gif`).
+    format: String,
+    /// Number of entries in `props`.
+    count: usize,
+    props: Vec<PropEntry>,
+}
+
+/// `<output_dir>/[subfolder/]manifest.json` — sits next to the textures folder.
+fn manifest_path(output_dir: &str, subfolder: &str) -> PathBuf {
+    let base = Path::new(output_dir);
+    let base = if subfolder.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(subfolder)
+    };
+    base.join("manifest.json")
+}
+
+/// Top-level folder (pack/DLC) a model sits under, relative to the input root.
+fn source_label(model: &Path, root: &Path) -> Option<String> {
+    let rel = model.strip_prefix(root).ok()?;
+    let first = rel.components().next()?;
+    Some(first.as_os_str().to_string_lossy().to_string())
+}
+
+/// Write `manifest.json` listing every successfully rendered prop, logging the
+/// outcome to the UI.
+fn write_manifest(app: &AppHandle, path: &Path, manifest: &Manifest) {
+    let json = match serde_json::to_string_pretty(manifest) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = app.emit("log", format!("Failed to serialize manifest: {e}"));
+            return;
+        }
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(path, json) {
+        Ok(()) => {
+            let _ = app.emit(
+                "log",
+                format!("Wrote {} ({} props).", path.display(), manifest.count),
+            );
+        }
+        Err(e) => {
+            let _ = app.emit("log", format!("Failed to write manifest.json: {e}"));
+        }
+    }
+}
+
 fn render_one(ytd: &Path, out: &Path, fmt: OutputFormat) -> qendering_core::Result<()> {
     let res = rsc7::parse_file(ytd)?;
     let texs = parse_texture_dictionary(&res.virtual_data, &res.physical_data)?;
@@ -138,6 +208,7 @@ fn run_flat(
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut processed = 0u32;
     let mut failed = 0u32;
+    let mut props: Vec<PropEntry> = Vec::new();
 
     for (i, ytd) in ytds.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -159,6 +230,11 @@ fn run_flat(
         let ok = match render_one(ytd, &out_path, fmt) {
             Ok(()) => {
                 processed += 1;
+                props.push(PropEntry {
+                    name: name.clone(),
+                    file: file.clone(),
+                    source: source_label(ytd, root),
+                });
                 true
             }
             Err(e) => {
@@ -178,6 +254,17 @@ fn run_flat(
             },
         );
     }
+
+    write_manifest(
+        app,
+        &manifest_path(output_dir, subfolder),
+        &Manifest {
+            mode: "clothing".into(),
+            format: fmt.ext().to_string(),
+            count: props.len(),
+            props,
+        },
+    );
 
     let _ = app.emit("done", DoneMsg { processed, failed });
 }
@@ -381,6 +468,9 @@ fn run_objects(
     let tex_dir = output_tex_dir(output_dir, subfolder);
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
+    // Output file name -> source pack, for the manifest (results only carry the
+    // output path, so we map back from the file name).
+    let mut source_by_file: HashMap<String, Option<String>> = HashMap::new();
     for ydr in &ydrs {
         let base = ydr
             .file_stem()
@@ -393,7 +483,9 @@ fn run_objects(
             format!("{base}_{}", *n + 1)
         };
         *n += 1;
-        let out = tex_dir.join(format!("{name}.{ext}"));
+        let file = format!("{name}.{ext}");
+        source_by_file.insert(file.clone(), source_label(ydr, root));
+        let out = tex_dir.join(&file);
         let mut item = RenderItem::object(
             ydr.to_string_lossy().to_string(),
             pack_dds.clone(),
@@ -439,20 +531,35 @@ fn run_objects(
         let _ = app.emit("log", "Render stopped.");
     }
 
-    // Assemble spin frames into GIFs (animate) or count stills.
+    // Assemble spin frames into GIFs (animate) or count stills, collecting a
+    // manifest entry for everything that ended up on disk.
     let mut processed = 0u32;
     let mut failed = 0u32;
+    let mut props: Vec<PropEntry> = Vec::new();
     for rr in &results {
+        let out = Path::new(&rr.output_path);
+        let file = out
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let name = out
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let mut ok = false;
         if animate {
             if rr.success && !rr.frames.is_empty() {
                 let delay = GIF_TOTAL_MS / GIF_FRAMES.max(1);
                 match qendering_core::texture::frames_to_gif(
                     &rr.frames,
-                    Path::new(&rr.output_path),
+                    out,
                     256,
                     delay,
                 ) {
-                    Ok(()) => processed += 1,
+                    Ok(()) => {
+                        processed += 1;
+                        ok = true;
+                    }
                     Err(e) => {
                         failed += 1;
                         let _ = app.emit("log", format!("GIF assembly failed {}: {e}", rr.output_path));
@@ -463,10 +570,29 @@ fn run_objects(
             }
         } else if rr.success {
             processed += 1;
+            ok = true;
         } else {
             failed += 1;
         }
+        if ok {
+            props.push(PropEntry {
+                source: source_by_file.get(&file).cloned().flatten(),
+                name,
+                file,
+            });
+        }
     }
+
+    write_manifest(
+        app,
+        &manifest_path(output_dir, subfolder),
+        &Manifest {
+            mode: "objects".into(),
+            format: ext.to_string(),
+            count: props.len(),
+            props,
+        },
+    );
 
     // Drop the pre-extracted pack DDS now that every worker is done with it.
     let _ = std::fs::remove_dir_all(temp_obj_dds_dir());
