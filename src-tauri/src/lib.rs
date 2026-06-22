@@ -267,7 +267,18 @@ fn extract_pack_dds(app: &AppHandle, input_root: &Path) -> Vec<String> {
     out
 }
 
-fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str) {
+fn run_objects(
+    app: &AppHandle,
+    input_dir: &str,
+    output_dir: &str,
+    format: &str,
+    azimuth_deg: f64,
+    elevation_deg: f64,
+    animate: bool,
+) {
+    const GIF_FRAMES: u32 = 24;
+    const GIF_TOTAL_MS: u32 = 2000;
+
     let root = Path::new(input_dir);
     let ydrs = discover_ydr_objects(root);
     let total = ydrs.len() as u32;
@@ -276,12 +287,12 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
     if total == 0 {
         let _ = app.emit("log", "No .ydr objects found under the input folder.");
     }
-    // Objects render through Blender, which writes WebP; other formats aren't
-    // supported on this path yet.
-    if !format.eq_ignore_ascii_case("webp") {
+    // Objects render through Blender: stills are WebP, spins are GIF; the
+    // chosen still format isn't applied on this path yet.
+    if !animate && !format.eq_ignore_ascii_case("webp") {
         let _ = app.emit(
             "log",
-            "Object previews are written as WebP regardless of the selected format.",
+            "Object stills are written as WebP regardless of the selected format.",
         );
     }
 
@@ -308,6 +319,13 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
     // textures on .ydr import). Embedded-texture objects are unaffected.
     let pack_dds = extract_pack_dds(app, root);
 
+    let config = RenderConfig {
+        azimuth: Some(azimuth_deg),
+        elevation: Some(elevation_deg),
+        ..Default::default()
+    };
+    let ext = if animate { "gif" } else { "webp" };
+
     let tex_dir = Path::new(output_dir).join("textures");
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
@@ -323,12 +341,16 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
             format!("{base}_{}", *n + 1)
         };
         *n += 1;
-        let out = tex_dir.join(format!("{name}.webp"));
-        items.push(RenderItem::object(
+        let out = tex_dir.join(format!("{name}.{ext}"));
+        let mut item = RenderItem::object(
             ydr.to_string_lossy().to_string(),
             pack_dds.clone(),
             out.to_string_lossy().to_string(),
-        ));
+        );
+        if animate {
+            item = item.with_frames(GIF_FRAMES);
+        }
+        items.push(item);
     }
 
     let app_cb = app.clone();
@@ -337,7 +359,7 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
         &script,
         items,
         0,
-        RenderConfig::default(),
+        config,
         move |rr, done, total| {
             let file = Path::new(&rr.output_path)
                 .file_name()
@@ -360,16 +382,60 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
         },
     );
 
-    let processed = results.iter().filter(|r| r.success).count() as u32;
-    let failed = results.len() as u32 - processed;
+    // Assemble spin frames into GIFs (animate) or count stills.
+    let mut processed = 0u32;
+    let mut failed = 0u32;
+    for rr in &results {
+        if animate {
+            if rr.success && !rr.frames.is_empty() {
+                let delay = GIF_TOTAL_MS / GIF_FRAMES.max(1);
+                match qendering_core::texture::frames_to_gif(
+                    &rr.frames,
+                    Path::new(&rr.output_path),
+                    256,
+                    delay,
+                ) {
+                    Ok(()) => processed += 1,
+                    Err(e) => {
+                        failed += 1;
+                        let _ = app.emit("log", format!("GIF assembly failed {}: {e}", rr.output_path));
+                    }
+                }
+            } else {
+                failed += 1;
+            }
+        } else if rr.success {
+            processed += 1;
+        } else {
+            failed += 1;
+        }
+    }
     let _ = app.emit("done", DoneMsg { processed, failed });
 }
 
 #[tauri::command]
-fn start_render(app: AppHandle, input_dir: String, output_dir: String, format: String, mode: String) {
+#[allow(clippy::too_many_arguments)]
+fn start_render(
+    app: AppHandle,
+    input_dir: String,
+    output_dir: String,
+    format: String,
+    mode: String,
+    azimuth_deg: f64,
+    elevation_deg: f64,
+    animate: bool,
+) {
     std::thread::spawn(move || {
         if mode == "objects" {
-            run_objects(&app, &input_dir, &output_dir, &format);
+            run_objects(
+                &app,
+                &input_dir,
+                &output_dir,
+                &format,
+                azimuth_deg,
+                elevation_deg,
+                animate,
+            );
         } else {
             run_flat(&app, &input_dir, &output_dir, &format);
         }
@@ -392,10 +458,105 @@ fn read_image_data_url(path: String) -> Result<String, String> {
     {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
         _ => "image/webp",
     };
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     Ok(format!("data:{mime};base64,{b64}"))
+}
+
+/// List rendered output files (relative to `<output_dir>/textures/`, forward
+/// slashes, sorted) for the gallery.
+#[tauri::command]
+fn list_outputs(output_dir: String) -> Vec<String> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<String>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, base, out);
+            } else {
+                let is_img = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase())
+                    .map(|s| matches!(s.as_str(), "webp" | "png" | "jpg" | "jpeg" | "gif"))
+                    .unwrap_or(false);
+                if is_img {
+                    if let Ok(rel) = p.strip_prefix(base) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+    }
+    let tex = Path::new(&output_dir).join("textures");
+    let mut out = Vec::new();
+    walk(&tex, &tex, &mut out);
+    out.sort();
+    out
+}
+
+/// Render the first object in the folder as a quick turntable (N azimuth
+/// frames at a low resolution) for the live-rotate preview. Returns the frame
+/// image paths in azimuth order; the UI scrubs through them with the slider.
+#[tauri::command]
+fn preview_turntable(
+    app: AppHandle,
+    input_dir: String,
+    mode: String,
+    elevation_deg: f64,
+    frames: u32,
+) -> Result<Vec<String>, String> {
+    if mode != "objects" {
+        return Err("Turntable preview is only available for objects.".into());
+    }
+    let root = Path::new(&input_dir);
+    let ydrs = discover_ydr_objects(root);
+    let first = ydrs
+        .first()
+        .ok_or_else(|| "No .ydr objects found in the folder.".to_string())?;
+
+    let blender = qendering_render::find_blender()
+        .ok_or_else(|| "Blender not found. Install Blender 4.x with Sollumz.".to_string())?;
+    let script = resolve_render_script(&app)
+        .ok_or_else(|| "Could not locate blender_render.py.".to_string())?;
+    let pack_dds = extract_pack_dds(&app, root);
+
+    let n = frames.clamp(8, 64);
+    let preview_dir =
+        std::env::temp_dir().join(format!("qendering_preview_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&preview_dir);
+    let _ = std::fs::create_dir_all(&preview_dir);
+    let out = preview_dir.join("preview.gif"); // unused stem; spin returns frames
+
+    // Fast preview: low resolution + single sample.
+    let config = RenderConfig {
+        render_size: Some(512),
+        taa_samples: Some(1),
+        elevation: Some(elevation_deg),
+        ..Default::default()
+    };
+    let item = RenderItem::object(
+        first.to_string_lossy().to_string(),
+        pack_dds,
+        out.to_string_lossy().to_string(),
+    )
+    .with_frames(n);
+
+    let results =
+        qendering_render::render(&blender, &script, vec![item], 1, config, |_, _, _| {});
+    let rr = results
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Render produced no result.".to_string())?;
+    if !rr.success {
+        return Err(rr.error.unwrap_or_else(|| "Render failed.".to_string()));
+    }
+    if rr.frames.is_empty() {
+        return Err("No frames were produced.".to_string());
+    }
+    Ok(rr.frames)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -406,7 +567,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan,
             start_render,
-            read_image_data_url
+            read_image_data_url,
+            list_outputs,
+            preview_turntable
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -115,6 +115,49 @@ pub fn render_preview_bytes(
     }
 }
 
+/// Assemble frame images into a looping GIF.
+///
+/// * `frame_paths` — ordered frame image files (e.g. the spin PNGs).
+/// * `out_path` — destination `.gif`.
+/// * `size` — square pixel size to scale each frame to (keeps GIFs small).
+/// * `frame_delay_ms` — per-frame delay; total duration ≈ frames × this.
+pub fn frames_to_gif(
+    frame_paths: &[String],
+    out_path: &Path,
+    size: u32,
+    frame_delay_ms: u32,
+) -> Result<()> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame};
+
+    if frame_paths.is_empty() {
+        return Err(Error::Parse("no frames to assemble".into()));
+    }
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let file = std::fs::File::create(out_path)?;
+    let mut enc = GifEncoder::new(std::io::BufWriter::new(file));
+    enc.set_repeat(Repeat::Infinite)
+        .map_err(|e| Error::Parse(format!("gif repeat: {e}")))?;
+    let delay = Delay::from_numer_denom_ms(frame_delay_ms.max(1), 1);
+
+    for p in frame_paths {
+        let img = image::open(p)
+            .map_err(|e| Error::Parse(format!("open frame {p}: {e}")))?
+            .to_rgba8();
+        let scaled = if img.width() == size && img.height() == size {
+            img
+        } else {
+            image::imageops::resize(&img, size, size, image::imageops::FilterType::Triangle)
+        };
+        enc.encode_frame(Frame::from_parts(scaled, 0, 0, delay))
+            .map_err(|e| Error::Parse(format!("gif encode frame: {e}")))?;
+    }
+    Ok(())
+}
+
 /// Render a texture preview straight to a file.
 pub fn save_preview(
     tex: &TextureInfo,
@@ -133,6 +176,32 @@ pub fn save_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gif_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("qgif_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..4u8 {
+            let img = image::RgbaImage::from_pixel(16, 16, image::Rgba([i * 60, 10, 10, 255]));
+            let p = dir.join(format!("f{i}.png"));
+            img.save(&p).unwrap();
+            paths.push(p.to_string_lossy().to_string());
+        }
+        let gif = dir.join("out.gif");
+        frames_to_gif(&paths, &gif, 16, 80).unwrap();
+        assert!(std::fs::metadata(&gif).unwrap().len() > 0);
+
+        use image::AnimationDecoder;
+        let dec = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(
+            std::fs::File::open(&gif).unwrap(),
+        ))
+        .unwrap();
+        let n = dec.into_frames().collect_frames().unwrap().len();
+        assert_eq!(n, 4, "GIF should have 4 frames");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn format_parse_and_ext() {

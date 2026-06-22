@@ -374,7 +374,8 @@ def render_item(item, cam_obj, work_base) -> dict:
 def render_object(item, cam_obj, work_base) -> dict:
     ydr_path = item["ydr_path"]
     output_path = item["output_path"]
-    result = {"output_path": output_path, "success": False, "error": None}
+    frames = item.get("frames")
+    result = {"output_path": output_path, "success": False, "error": None, "frames": []}
     try:
         _clear_meshes()
         item_work = os.path.join(work_base, f"obj_{id(item)}")
@@ -392,14 +393,38 @@ def render_object(item, cam_obj, work_base) -> dict:
         if dds_files:
             fix_missing_textures(dds_files, use_default=False)
         fix_alpha_modes()
-        frame_camera_object(cam_obj)
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        bpy.context.scene.render.filepath = output_path
-        bpy.ops.render.render(write_still=True)
-        if os.path.isfile(output_path):
-            result["success"] = True
+
+        if frames and int(frames) > 1:
+            # Spin: render N frames over a full 360° as PNGs (for GIF assembly).
+            n = int(frames)
+            saved_fmt = bpy.context.scene.render.image_settings.file_format
+            bpy.context.scene.render.image_settings.file_format = "PNG"
+            frame_paths = []
+            try:
+                for i in range(n):
+                    az = OBJECT_AZIMUTH_DEG + (360.0 * i / n)
+                    frame_camera_object(cam_obj, az, OBJECT_ELEVATION_DEG)
+                    fp = os.path.join(item_work, f"frame_{i:03d}.png")
+                    bpy.context.scene.render.filepath = fp
+                    bpy.ops.render.render(write_still=True)
+                    if os.path.isfile(fp):
+                        frame_paths.append(fp)
+            finally:
+                bpy.context.scene.render.image_settings.file_format = saved_fmt
+            if frame_paths:
+                result["frames"] = frame_paths
+                result["success"] = True
+            else:
+                result["error"] = "Spin produced no frames"
         else:
-            result["error"] = "Render produced no output file"
+            frame_camera_object(cam_obj, OBJECT_AZIMUTH_DEG, OBJECT_ELEVATION_DEG)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            bpy.context.scene.render.filepath = output_path
+            bpy.ops.render.render(write_still=True)
+            if os.path.isfile(output_path):
+                result["success"] = True
+            else:
+                result["error"] = "Render produced no output file"
     except Exception as exc:
         result["error"] = f"{type(exc).__name__}: {exc}"
         traceback.print_exc(file=sys.stderr)
@@ -407,11 +432,15 @@ def render_object(item, cam_obj, work_base) -> dict:
 
 
 def _apply_config(config: dict) -> None:
-    global RENDER_SIZE, TAA_SAMPLES
+    global RENDER_SIZE, TAA_SAMPLES, OBJECT_AZIMUTH_DEG, OBJECT_ELEVATION_DEG
     if "render_size" in config:
         RENDER_SIZE = int(config["render_size"])
     if "taa_samples" in config:
         TAA_SAMPLES = int(config["taa_samples"])
+    if "azimuth" in config:
+        OBJECT_AZIMUTH_DEG = float(config["azimuth"])
+    if "elevation" in config:
+        OBJECT_ELEVATION_DEG = float(config["elevation"])
 
 
 # ---------------------------------------------------------------------------

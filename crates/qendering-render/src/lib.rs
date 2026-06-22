@@ -44,6 +44,9 @@ pub enum RenderItem {
         #[serde(skip_serializing_if = "Vec::is_empty")]
         dds_files: Vec<String>,
         output_path: String,
+        /// When set, render this many frames spinning a full 360° (for GIF).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frames: Option<u32>,
     },
 }
 
@@ -83,7 +86,17 @@ impl RenderItem {
             ydr_path: ydr_path.into(),
             dds_files,
             output_path: output_path.into(),
+            frames: None,
         }
+    }
+
+    /// Request a spinning render of `n` frames (objects only); the worker
+    /// returns the frame image paths for GIF assembly.
+    pub fn with_frames(mut self, n: u32) -> Self {
+        if let RenderItem::Object { frames, .. } = &mut self {
+            *frames = Some(n);
+        }
+        self
     }
 
     /// The image path this item renders to.
@@ -109,12 +122,21 @@ pub struct RenderConfig {
     /// TAA sample count; `None` keeps the worker preset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taa_samples: Option<u32>,
+    /// Object camera azimuth in degrees; `None` keeps the worker default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub azimuth: Option<f64>,
+    /// Object camera elevation in degrees; `None` keeps the worker default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elevation: Option<f64>,
 }
 
 impl RenderConfig {
     /// Whether any setting is present (and thus worth sending).
     fn is_empty(&self) -> bool {
-        self.render_size.is_none() && self.taa_samples.is_none()
+        self.render_size.is_none()
+            && self.taa_samples.is_none()
+            && self.azimuth.is_none()
+            && self.elevation.is_none()
     }
 
     fn to_line(&self) -> String {
@@ -129,6 +151,9 @@ pub struct RenderResult {
     pub success: bool,
     #[serde(default)]
     pub error: Option<String>,
+    /// Frame image paths for a spin render (empty for a single still).
+    #[serde(default)]
+    pub frames: Vec<String>,
 }
 
 impl RenderResult {
@@ -137,6 +162,7 @@ impl RenderResult {
             output_path: output_path.to_string(),
             success: false,
             error: Some(error.into()),
+            frames: Vec::new(),
         }
     }
 }
@@ -506,13 +532,34 @@ mod tests {
         let cfg = RenderConfig {
             render_size: Some(2048),
             taa_samples: Some(8),
+            azimuth: Some(30.0),
+            elevation: Some(20.0),
         };
         let line = cfg.to_line();
         assert!(line.starts_with("CONFIG:"));
         let v: serde_json::Value = serde_json::from_str(line.strip_prefix("CONFIG:").unwrap()).unwrap();
         assert_eq!(v["render_size"], 2048);
         assert_eq!(v["taa_samples"], 8);
+        assert_eq!(v["azimuth"], 30.0);
+        assert_eq!(v["elevation"], 20.0);
         assert!(RenderConfig::default().is_empty());
+        // angle-only config is still non-empty (worth sending)
+        assert!(!RenderConfig { azimuth: Some(45.0), ..Default::default() }.is_empty());
+    }
+
+    #[test]
+    fn spin_item_and_frames_result() {
+        let item = RenderItem::object("o.ydr", vec![], "o.gif").with_frames(24);
+        let v: serde_json::Value = serde_json::from_str(&item.to_line()).unwrap();
+        assert_eq!(v["frames"], 24);
+
+        let payload = r#"{"output_path":"o.gif","success":true,"error":null,"frames":["f0.png","f1.png"]}"#;
+        let rr: RenderResult = serde_json::from_str(payload).unwrap();
+        assert_eq!(rr.frames.len(), 2);
+        // a still result (no frames key) parses to an empty frames vec
+        let still: RenderResult =
+            serde_json::from_str(r#"{"output_path":"o.webp","success":true}"#).unwrap();
+        assert!(still.frames.is_empty());
     }
 
     #[test]
