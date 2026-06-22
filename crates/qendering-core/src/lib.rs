@@ -6,4 +6,8 @@
 //! Blender, so it can be unit-tested in isolation.
 
 pub mod discovery;
+pub mod error;
 pub mod filename;
+pub mod rsc7;
+
+pub use error::{Error, Result};
