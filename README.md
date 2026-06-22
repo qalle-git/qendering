@@ -47,6 +47,8 @@ https://github.com/qalle-git/qendering/raw/main/docs/qendering.mp4
 - **Dated / labeled output folders**: optionally write each run into a
   timestamped (and optionally labeled) subfolder.
 - **Stop button**: cancel cleanly after the current item.
+- **Per-item timeout**: skip any Blender render that hangs longer than the
+  chosen number of seconds (the worker restarts so the run keeps going).
 - **`manifest.json`**: every run writes a machine-readable index of what it
   produced (see below), for downstream catalogs and CDN-backed browsers.
 - **Clean output**: source basenames with `^` rewritten to `_`, automatic

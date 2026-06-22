@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-const ITEM_TIMEOUT: Duration = Duration::from_secs(120);
+/// Default per-item render timeout when a caller does not specify one.
+pub const DEFAULT_ITEM_TIMEOUT: Duration = Duration::from_secs(120);
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_WORKER_CRASHES: u32 = 3;
 const MAX_AUTO_WORKERS: usize = 8;
@@ -210,16 +211,23 @@ struct BlenderWorker {
     blender_path: PathBuf,
     script_path: PathBuf,
     config: RenderConfig,
+    item_timeout: Duration,
     child: Option<Child>,
     rx: Option<Receiver<String>>,
 }
 
 impl BlenderWorker {
-    fn new(blender_path: &Path, script_path: &Path, config: RenderConfig) -> Self {
+    fn new(
+        blender_path: &Path,
+        script_path: &Path,
+        config: RenderConfig,
+        item_timeout: Duration,
+    ) -> Self {
         BlenderWorker {
             blender_path: blender_path.to_path_buf(),
             script_path: script_path.to_path_buf(),
             config,
+            item_timeout,
             child: None,
             rx: None,
         }
@@ -324,7 +332,7 @@ impl BlenderWorker {
             return Err(WorkerError::Crash);
         }
         let rx = self.rx.as_ref().ok_or(WorkerError::Crash)?;
-        let deadline = Instant::now() + ITEM_TIMEOUT;
+        let deadline = Instant::now() + self.item_timeout;
         loop {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return Err(WorkerError::Timeout);
@@ -375,16 +383,20 @@ impl BlenderWorker {
 /// * `parallel` — worker count, or `0` to auto-pick from CPU cores
 ///   (capped at [`MAX_AUTO_WORKERS`]).
 /// * `config` — render settings forwarded to every worker.
+/// * `item_timeout` — skip (fail) any item that takes longer than this; the
+///   worker is restarted so the next item starts clean.
 /// * `on_progress` — invoked once per finished item as
 ///   `(result, completed_count, total)`.
 /// * `cancel` — when set true, workers stop pulling new items after the
 ///   in-flight item finishes (already-queued items are drained as failures).
+#[allow(clippy::too_many_arguments)]
 pub fn render<F>(
     blender_path: &Path,
     script_path: &Path,
     items: Vec<RenderItem>,
     parallel: usize,
     config: RenderConfig,
+    item_timeout: Duration,
     on_progress: F,
     cancel: Arc<AtomicBool>,
 ) -> Vec<RenderResult>
@@ -423,7 +435,15 @@ where
         let record = record.clone();
         let cancel = Arc::clone(&cancel);
         handles.push(thread::spawn(move || {
-            worker_loop(&blender_path, &script_path, config, &queue, &record, &cancel);
+            worker_loop(
+                &blender_path,
+                &script_path,
+                config,
+                item_timeout,
+                &queue,
+                &record,
+                &cancel,
+            );
         }));
     }
 
@@ -448,15 +468,17 @@ fn resolve_parallel(requested: usize) -> usize {
 }
 
 /// Pull items off the queue and render them, restarting on crash/timeout.
+#[allow(clippy::too_many_arguments)]
 fn worker_loop(
     blender_path: &Path,
     script_path: &Path,
     config: RenderConfig,
+    item_timeout: Duration,
     queue: &Arc<Mutex<VecDeque<RenderItem>>>,
     record: &impl Fn(RenderResult),
     cancel: &AtomicBool,
 ) {
-    let mut worker = BlenderWorker::new(blender_path, script_path, config);
+    let mut worker = BlenderWorker::new(blender_path, script_path, config, item_timeout);
     if !worker.start() {
         return;
     }
@@ -487,7 +509,7 @@ fn worker_loop(
             Err(WorkerError::Timeout) => {
                 record(RenderResult::failure(
                     item.output_path(),
-                    format!("render timed out after {}s", ITEM_TIMEOUT.as_secs()),
+                    format!("render timed out after {}s", item_timeout.as_secs()),
                 ));
                 if !worker.restart() {
                     break;
@@ -612,6 +634,7 @@ mod tests {
             vec![],
             4,
             RenderConfig::default(),
+            DEFAULT_ITEM_TIMEOUT,
             |_, _, _| {},
             Arc::new(AtomicBool::new(false)),
         );
@@ -632,6 +655,7 @@ mod tests {
             items,
             1,
             RenderConfig::default(),
+            DEFAULT_ITEM_TIMEOUT,
             |_, _, _| {},
             Arc::new(AtomicBool::new(true)),
         );
@@ -684,6 +708,7 @@ mod tests {
             items,
             1,
             RenderConfig::default(),
+            DEFAULT_ITEM_TIMEOUT,
             |_, _, _| {},
             Arc::new(AtomicBool::new(false)),
         );

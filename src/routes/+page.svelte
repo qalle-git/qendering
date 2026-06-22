@@ -21,6 +21,8 @@
   // Clothing: 3D-render the .ydd drawable in Blender instead of the fast flat
   // texture extraction.
   let clothing3d = $state(false);
+  // Skip a Blender item that hangs longer than this (seconds).
+  let timeoutSecs = $state(30);
 
   let scan = $state<ScanResult | null>(null);
   let scanning = $state(false);
@@ -142,6 +144,7 @@
         subfolder,
         batch: mode === "objects" ? batch : false,
         clothing3d: mode === "clothing" ? clothing3d : false,
+        timeoutSecs: Math.max(3, Math.round(timeoutSecs) || 30),
       });
     } catch (e) {
       addLog(`Failed to start: ${e}`);
@@ -460,6 +463,11 @@
           {#if mode === "clothing"}
             <div class="hint">Azimuth <b>0°</b> faces the piece head-on; raise it for a 3/4 view.</div>
           {/if}
+          <div class="slider">
+            <div class="sliderhead"><span>Skip item after</span><b>{timeoutSecs}s</b></div>
+            <input type="range" min="5" max="120" step="5" bind:value={timeoutSecs} />
+          </div>
+          <div class="hint">A Blender render that hangs longer than this is skipped and marked failed.</div>
         </section>
       {/if}
 

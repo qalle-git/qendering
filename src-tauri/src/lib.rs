@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -449,8 +450,10 @@ fn run_clothing_3d(
     azimuth_deg: f64,
     elevation_deg: f64,
     subfolder: &str,
+    timeout_secs: u64,
     cancel: Arc<AtomicBool>,
 ) {
+    let item_timeout = Duration::from_secs(timeout_secs.max(3));
     let root = Path::new(input_dir);
     let fmt = OutputFormat::parse(format).unwrap_or(OutputFormat::Webp);
     let ytds = discover_ytd_base_files(root);
@@ -532,6 +535,7 @@ fn run_clothing_3d(
         items,
         0,
         config,
+        item_timeout,
         move |rr, done, total| {
             let file = Path::new(&rr.output_path)
                 .file_name()
@@ -618,6 +622,7 @@ fn render_object_group(
     animate: bool,
     config: &RenderConfig,
     pack_dds: &[String],
+    item_timeout: Duration,
     cancel: &Arc<AtomicBool>,
     base_done: u32,
     grand_total: u32,
@@ -660,6 +665,7 @@ fn render_object_group(
         items,
         0,
         config.clone(),
+        item_timeout,
         move |rr, done, _total| {
             let file = Path::new(&rr.output_path)
                 .file_name()
@@ -741,8 +747,10 @@ fn run_objects(
     animate: bool,
     subfolder: &str,
     batch: bool,
+    timeout_secs: u64,
     cancel: Arc<AtomicBool>,
 ) {
+    let item_timeout = Duration::from_secs(timeout_secs.max(3));
     let root = Path::new(input_dir);
     let ydrs = discover_ydr_objects(root);
     let total = ydrs.len() as u32;
@@ -823,7 +831,7 @@ fn run_objects(
         let tex_dir = output_tex_dir(output_dir, rel);
         let (p, f, props) = render_object_group(
             app, &blender, &script, group, root, &tex_dir, ext, animate, &config, &pack_dds,
-            &cancel, base_done, total,
+            item_timeout, &cancel, base_done, total,
         );
         write_manifest(
             app,
@@ -868,6 +876,7 @@ fn start_render(
     subfolder: String,
     batch: bool,
     clothing3d: bool,
+    timeout_secs: u64,
 ) {
     let cancel = state.0.clone();
     cancel.store(false, Ordering::Relaxed);
@@ -883,6 +892,7 @@ fn start_render(
                 animate,
                 &subfolder,
                 batch,
+                timeout_secs,
                 cancel,
             );
         } else if clothing3d {
@@ -894,6 +904,7 @@ fn start_render(
                 azimuth_deg,
                 elevation_deg,
                 &subfolder,
+                timeout_secs,
                 cancel,
             );
         } else {
@@ -1016,6 +1027,7 @@ fn preview_turntable(
         vec![item],
         1,
         config,
+        Duration::from_secs(60),
         |_, _, _| {},
         Arc::new(AtomicBool::new(false)),
     );
