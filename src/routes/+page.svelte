@@ -18,6 +18,9 @@
   // Per-pack batch: render each top-level pack in its own isolated worker pool
   // and output subfolder/manifest.
   let batch = $state(false);
+  // Clothing: 3D-render the .ydd drawable in Blender instead of the fast flat
+  // texture extraction.
+  let clothing3d = $state(false);
 
   let scan = $state<ScanResult | null>(null);
   let scanning = $state(false);
@@ -138,6 +141,7 @@
         animate: mode === "objects" ? animate : false,
         subfolder,
         batch: mode === "objects" ? batch : false,
+        clothing3d: mode === "clothing" ? clothing3d : false,
       });
     } catch (e) {
       addLog(`Failed to start: ${e}`);
@@ -405,6 +409,20 @@
           <option value="jpg">JPEG</option>
         </select>
       </section>
+
+      {#if mode === "clothing"}
+        <section class="group">
+          <label class="check">
+            <input type="checkbox" bind:checked={clothing3d} />
+            <span>3D render (Blender)</span>
+          </label>
+          <div class="hint">
+            {clothing3d
+              ? "Imports each .ydd drawable in Blender for a 3D preview (slower; needs Blender + Sollumz)."
+              : "Fast flat texture extraction straight from the .ytd (no Blender)."}
+          </div>
+        </section>
+      {/if}
 
       <section class="group">
         <label class="check">

@@ -18,7 +18,8 @@ latest `.exe` / `.msi`.
 - **Two render modes**
   - *Clothing*: a fast, pure-Rust pipeline that pulls the diffuse texture
     straight from each `.ytd` (RSC7 -> YTD -> DDS -> decode -> image). No
-    Blender needed.
+    Blender needed. An optional **3D render** toggle instead imports each paired
+    `.ydd` drawable in Blender for a true 3D preview.
   - *Objects*: 3/4 product shots of standalone `.ydr` world objects rendered in
     Blender via Sollumz, with external `.ytd` pack textures auto-applied.
 - **Output formats**: WebP, PNG, or JPEG. Transparent backgrounds for WebP/PNG;

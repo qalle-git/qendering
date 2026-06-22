@@ -352,6 +352,7 @@ fn cleanup_temp_dirs() {
         let name = e.file_name();
         let name = name.to_string_lossy();
         if name.starts_with("qendering_obj_dds_")
+            || name.starts_with("qendering_cloth_dds_")
             || name.starts_with("qendering_preview_")
             || name.starts_with("qendering_worker_")
         {
@@ -401,6 +402,196 @@ fn extract_pack_dds(app: &AppHandle, input_root: &Path) -> Vec<String> {
         );
     }
     out
+}
+
+/// Temp root for the per-item clothing DDS extracted for 3D clothing renders.
+fn temp_cloth_dds_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("qendering_cloth_dds_{}", std::process::id()))
+}
+
+/// Extract one `.ytd`'s textures to DDS files in `dest`, returning their paths.
+/// Used by 3D clothing rendering, where each piece carries its own texture
+/// dictionary (unlike objects, which share a pre-extracted pack).
+fn extract_ytd_to_dir(ytd: &Path, dest: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(res) = rsc7::parse_file(ytd) else { return out };
+    let Ok(texs) = parse_texture_dictionary(&res.virtual_data, &res.physical_data) else {
+        return out;
+    };
+    let _ = std::fs::create_dir_all(dest);
+    let mut seen: HashSet<String> = HashSet::new();
+    for t in &texs {
+        if t.raw_data.is_empty() {
+            continue;
+        }
+        let safe = sanitize_tex_name(&t.name);
+        if safe.is_empty() || !seen.insert(safe.to_lowercase()) {
+            continue;
+        }
+        let Ok(bytes) = qendering_core::dds::build_dds(t) else { continue };
+        let p = dest.join(format!("{safe}.dds"));
+        if std::fs::write(&p, bytes).is_ok() {
+            out.push(p.to_string_lossy().to_string());
+        }
+    }
+    out
+}
+
+/// 3D clothing render: import each paired `.ydd` drawable in Blender (applying
+/// its `.ytd` textures) and render a front-facing still, instead of the flat
+/// texture-extraction pipeline in [`run_flat`].
+fn run_clothing_3d(
+    app: &AppHandle,
+    input_dir: &str,
+    output_dir: &str,
+    format: &str,
+    subfolder: &str,
+    cancel: Arc<AtomicBool>,
+) {
+    let root = Path::new(input_dir);
+    let fmt = OutputFormat::parse(format).unwrap_or(OutputFormat::Webp);
+    let ytds = discover_ytd_base_files(root);
+
+    let Some(blender) = qendering_render::find_blender() else {
+        let _ = app.emit("start", StartMsg { total: 0 });
+        let _ = app.emit(
+            "log",
+            "Blender not found. Install Blender 4.x with the Sollumz add-on for 3D clothing.",
+        );
+        let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
+        return;
+    };
+    let Some(script) = resolve_render_script(app) else {
+        let _ = app.emit("start", StartMsg { total: 0 });
+        let _ = app.emit("log", "Could not locate blender_render.py.");
+        let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
+        return;
+    };
+
+    let config = RenderConfig {
+        still_format: Some(fmt.blender_format().to_string()),
+        ..Default::default()
+    };
+    let ext = fmt.ext();
+    let tex_dir = output_tex_dir(output_dir, subfolder);
+    let dds_root = temp_cloth_dds_dir();
+    let _ = std::fs::remove_dir_all(&dds_root);
+    let _ = std::fs::create_dir_all(&dds_root);
+
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    let mut items: Vec<RenderItem> = Vec::new();
+    let mut source_by_file: HashMap<String, Option<String>> = HashMap::new();
+    let mut skipped = 0u32;
+    for (i, ytd) in ytds.iter().enumerate() {
+        let Some(ydd) = find_ydd_for_ytd(ytd) else {
+            skipped += 1;
+            continue;
+        };
+        let base = output_base_name(ytd);
+        let n = seen.entry(base.clone()).or_insert(0);
+        let name = if *n == 0 {
+            base.clone()
+        } else {
+            format!("{base}_{}", *n + 1)
+        };
+        *n += 1;
+        let file = format!("{name}.{ext}");
+        let dds = extract_ytd_to_dir(ytd, &dds_root.join(format!("i{i}")));
+        let out = tex_dir.join(&file);
+        source_by_file.insert(file.clone(), source_label(ytd, root));
+        items.push(RenderItem::clothing(
+            ydd.to_string_lossy().to_string(),
+            dds,
+            out.to_string_lossy().to_string(),
+        ));
+    }
+
+    let total = items.len() as u32;
+    let _ = app.emit("start", StartMsg { total });
+    if skipped > 0 {
+        let _ = app.emit(
+            "log",
+            format!("Skipped {skipped} clothing piece(s) with no paired .ydd drawable."),
+        );
+    }
+    if total == 0 {
+        let _ = std::fs::remove_dir_all(&dds_root);
+        let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
+        return;
+    }
+
+    let app_cb = app.clone();
+    let results = qendering_render::render(
+        &blender,
+        &script,
+        items,
+        0,
+        config,
+        move |rr, done, total| {
+            let file = Path::new(&rr.output_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let _ = app_cb.emit(
+                "progress",
+                Progress {
+                    current: done as u32,
+                    total: total as u32,
+                    file,
+                    ok: rr.success,
+                },
+            );
+            if !rr.success {
+                if let Some(e) = &rr.error {
+                    let _ = app_cb.emit("log", format!("FAIL {}: {e}", rr.output_path));
+                }
+            }
+        },
+        Arc::clone(&cancel),
+    );
+
+    if cancel.load(Ordering::Relaxed) {
+        let _ = app.emit("log", "Render stopped.");
+    }
+
+    let mut processed = 0u32;
+    let mut failed = 0u32;
+    let mut props: Vec<PropEntry> = Vec::new();
+    for rr in &results {
+        if rr.success {
+            processed += 1;
+            let out = Path::new(&rr.output_path);
+            let file = out
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let name = out
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            props.push(PropEntry {
+                source: source_by_file.get(&file).cloned().flatten(),
+                name,
+                file,
+            });
+        } else {
+            failed += 1;
+        }
+    }
+
+    write_manifest(
+        app,
+        &manifest_path(output_dir, subfolder),
+        &Manifest {
+            mode: "clothing".into(),
+            format: ext.to_string(),
+            count: props.len(),
+            props,
+        },
+    );
+
+    let _ = std::fs::remove_dir_all(&dds_root);
+    let _ = app.emit("done", DoneMsg { processed, failed });
 }
 
 const OBJ_GIF_FRAMES: u32 = 24;
@@ -671,6 +862,7 @@ fn start_render(
     animate: bool,
     subfolder: String,
     batch: bool,
+    clothing3d: bool,
 ) {
     let cancel = state.0.clone();
     cancel.store(false, Ordering::Relaxed);
@@ -688,6 +880,8 @@ fn start_render(
                 batch,
                 cancel,
             );
+        } else if clothing3d {
+            run_clothing_3d(&app, &input_dir, &output_dir, &format, &subfolder, cancel);
         } else {
             run_flat(&app, &input_dir, &output_dir, &format, &subfolder, &cancel);
         }
