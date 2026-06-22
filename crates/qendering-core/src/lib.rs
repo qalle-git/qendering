@@ -5,4 +5,5 @@
 //! encoding preview images. Everything here is independent of the UI and of
 //! Blender, so it can be unit-tested in isolation.
 
+pub mod discovery;
 pub mod filename;
