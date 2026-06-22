@@ -1,0 +1,8 @@
+[package]
+name = "qendering-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core logic for Qendering: GTA V asset parsing, discovery, and image output."
+
+[dependencies]
+regex = "1"
