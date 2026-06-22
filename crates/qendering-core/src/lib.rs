@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod error;
 pub mod filename;
 pub mod rsc7;
+pub mod texture;
 pub mod ytd;
 
 pub use error::{Error, Result};

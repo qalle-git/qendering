@@ -9,6 +9,9 @@ regex = "1"
 walkdir = "2"
 flate2 = "1"
 thiserror = "2"
+image = "0.25"
+image_dds = "0.7"
+webp = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
