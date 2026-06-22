@@ -15,7 +15,8 @@ latest `.exe` / `.msi`.
 
 ## Demo
 
-<video src="https://github.com/qalle-git/qendering/raw/main/docs/qendering.webm" controls width="100%"></video>
+[qendering.webm](https://github.com/user-attachments/assets/8de23d67-6cd5-4bbe-9940-d8869c93a609)
+
 
 [Watch the demo](https://github.com/qalle-git/qendering/raw/main/docs/qendering.webm)
 if the player does not load.
