@@ -1,8 +1,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
+
+/// Managed cancel flag, toggled by `cancel_render`, checked by the render loops.
+struct CancelFlag(Arc<AtomicBool>);
 
 use qendering_render::{RenderConfig, RenderItem};
 
@@ -92,6 +97,17 @@ fn output_base_name(ytd: &Path) -> String {
         .unwrap_or_else(|| "texture".to_string())
 }
 
+/// `<output_dir>/[subfolder/]textures` — where rendered files are written.
+fn output_tex_dir(output_dir: &str, subfolder: &str) -> PathBuf {
+    let base = Path::new(output_dir);
+    let base = if subfolder.is_empty() {
+        base.to_path_buf()
+    } else {
+        base.join(subfolder)
+    };
+    base.join("textures")
+}
+
 fn render_one(ytd: &Path, out: &Path, fmt: OutputFormat) -> qendering_core::Result<()> {
     let res = rsc7::parse_file(ytd)?;
     let texs = parse_texture_dictionary(&res.virtual_data, &res.physical_data)?;
@@ -100,7 +116,14 @@ fn render_one(ytd: &Path, out: &Path, fmt: OutputFormat) -> qendering_core::Resu
     save_preview(diff, out, DEFAULT_CANVAS, fmt)
 }
 
-fn run_flat(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str) {
+fn run_flat(
+    app: &AppHandle,
+    input_dir: &str,
+    output_dir: &str,
+    format: &str,
+    subfolder: &str,
+    cancel: &AtomicBool,
+) {
     let root = Path::new(input_dir);
     let fmt = OutputFormat::parse(format).unwrap_or(OutputFormat::Webp);
     let ytds = discover_ytd_base_files(root);
@@ -111,12 +134,16 @@ fn run_flat(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str) {
         let _ = app.emit("log", "No clothing .ytd files found under the input folder.");
     }
 
-    let tex_dir = Path::new(output_dir).join("textures");
+    let tex_dir = output_tex_dir(output_dir, subfolder);
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut processed = 0u32;
     let mut failed = 0u32;
 
     for (i, ytd) in ytds.iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = app.emit("log", "Render stopped.");
+            break;
+        }
         let base = output_base_name(ytd);
         let n = seen.entry(base.clone()).or_insert(0);
         let name = if *n == 0 {
@@ -267,6 +294,7 @@ fn extract_pack_dds(app: &AppHandle, input_root: &Path) -> Vec<String> {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_objects(
     app: &AppHandle,
     input_dir: &str,
@@ -275,6 +303,8 @@ fn run_objects(
     azimuth_deg: f64,
     elevation_deg: f64,
     animate: bool,
+    subfolder: &str,
+    cancel: Arc<AtomicBool>,
 ) {
     const GIF_FRAMES: u32 = 24;
     const GIF_TOTAL_MS: u32 = 2000;
@@ -326,7 +356,7 @@ fn run_objects(
     };
     let ext = if animate { "gif" } else { "webp" };
 
-    let tex_dir = Path::new(output_dir).join("textures");
+    let tex_dir = output_tex_dir(output_dir, subfolder);
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
     for ydr in &ydrs {
@@ -380,7 +410,12 @@ fn run_objects(
                 }
             }
         },
+        Arc::clone(&cancel),
     );
+
+    if cancel.load(Ordering::Relaxed) {
+        let _ = app.emit("log", "Render stopped.");
+    }
 
     // Assemble spin frames into GIFs (animate) or count stills.
     let mut processed = 0u32;
@@ -417,6 +452,7 @@ fn run_objects(
 #[allow(clippy::too_many_arguments)]
 fn start_render(
     app: AppHandle,
+    state: tauri::State<CancelFlag>,
     input_dir: String,
     output_dir: String,
     format: String,
@@ -424,7 +460,10 @@ fn start_render(
     azimuth_deg: f64,
     elevation_deg: f64,
     animate: bool,
+    subfolder: String,
 ) {
+    let cancel = state.0.clone();
+    cancel.store(false, Ordering::Relaxed);
     std::thread::spawn(move || {
         if mode == "objects" {
             run_objects(
@@ -435,11 +474,19 @@ fn start_render(
                 azimuth_deg,
                 elevation_deg,
                 animate,
+                &subfolder,
+                cancel,
             );
         } else {
-            run_flat(&app, &input_dir, &output_dir, &format);
+            run_flat(&app, &input_dir, &output_dir, &format, &subfolder, &cancel);
         }
     });
+}
+
+/// Request the running render to stop after the current item.
+#[tauri::command]
+fn cancel_render(state: tauri::State<CancelFlag>) {
+    state.0.store(true, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -544,8 +591,15 @@ fn preview_turntable(
     )
     .with_frames(n);
 
-    let results =
-        qendering_render::render(&blender, &script, vec![item], 1, config, |_, _, _| {});
+    let results = qendering_render::render(
+        &blender,
+        &script,
+        vec![item],
+        1,
+        config,
+        |_, _, _| {},
+        Arc::new(AtomicBool::new(false)),
+    );
     let rr = results
         .into_iter()
         .next()
@@ -564,9 +618,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(CancelFlag(Arc::new(AtomicBool::new(false))))
         .invoke_handler(tauri::generate_handler![
             scan,
             start_render,
+            cancel_render,
             read_image_data_url,
             list_outputs,
             preview_turntable

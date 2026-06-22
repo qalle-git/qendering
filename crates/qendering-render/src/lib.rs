@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -372,6 +373,8 @@ impl BlenderWorker {
 /// * `config` — render settings forwarded to every worker.
 /// * `on_progress` — invoked once per finished item as
 ///   `(result, completed_count, total)`.
+/// * `cancel` — when set true, workers stop pulling new items after the
+///   in-flight item finishes (already-queued items are drained as failures).
 pub fn render<F>(
     blender_path: &Path,
     script_path: &Path,
@@ -379,6 +382,7 @@ pub fn render<F>(
     parallel: usize,
     config: RenderConfig,
     on_progress: F,
+    cancel: Arc<AtomicBool>,
 ) -> Vec<RenderResult>
 where
     F: Fn(&RenderResult, usize, usize) + Send + Sync + 'static,
@@ -413,8 +417,9 @@ where
         let script_path = script_path.to_path_buf();
         let config = config.clone();
         let record = record.clone();
+        let cancel = Arc::clone(&cancel);
         handles.push(thread::spawn(move || {
-            worker_loop(&blender_path, &script_path, config, &queue, &record);
+            worker_loop(&blender_path, &script_path, config, &queue, &record, &cancel);
         }));
     }
 
@@ -445,13 +450,20 @@ fn worker_loop(
     config: RenderConfig,
     queue: &Arc<Mutex<VecDeque<RenderItem>>>,
     record: &impl Fn(RenderResult),
+    cancel: &AtomicBool,
 ) {
     let mut worker = BlenderWorker::new(blender_path, script_path, config);
     if !worker.start() {
         return;
     }
     let mut crashes = 0u32;
-    while let Some(item) = queue.lock().unwrap().pop_front() {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let Some(item) = queue.lock().unwrap().pop_front() else {
+            break;
+        };
         match worker.render_item(&item) {
             Ok(rr) => record(rr),
             Err(WorkerError::Crash) => {
@@ -595,8 +607,30 @@ mod tests {
             4,
             RenderConfig::default(),
             |_, _, _| {},
+            Arc::new(AtomicBool::new(false)),
         );
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn cancelled_render_returns_one_result_per_item() {
+        // Bogus paths: workers fail to start, so nothing launches Blender; with
+        // cancel pre-set we still get exactly one (failed) result per item.
+        let items = vec![
+            RenderItem::object("a.ydr", vec![], "a.webp"),
+            RenderItem::object("b.ydr", vec![], "b.webp"),
+        ];
+        let out = render(
+            Path::new("qendering-nonexistent-blender"),
+            Path::new("qendering-nonexistent-script.py"),
+            items,
+            1,
+            RenderConfig::default(),
+            |_, _, _| {},
+            Arc::new(AtomicBool::new(true)),
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| !r.success));
     }
 
     #[test]
@@ -645,6 +679,7 @@ mod tests {
             1,
             RenderConfig::default(),
             |_, _, _| {},
+            Arc::new(AtomicBool::new(false)),
         );
         assert_eq!(results.len(), 1);
         assert!(results[0].success, "render failed: {:?}", results[0].error);

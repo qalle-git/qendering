@@ -28,10 +28,22 @@
   let failed = $state(0);
   let log = $state<string[]>([]);
 
+  // Per-render output subfolder (dated/labeled).
+  let useSubfolder = $state(false);
+  let label = $state("");
+  let stopping = $state(false);
+
   // Gallery of rendered results.
-  let outputs = $state<string[]>([]); // paths relative to <output>/textures
-  let selectedIndex = $state(-1);
+  let outputs = $state<string[]>([]); // paths relative to <dir>/textures
+  let selectedIndex = $state(-1); // index into filteredOutputs
   let thumbs = $state<Record<string, string>>({}); // rel -> data URL (lazy)
+  let filter = $state("");
+  let currentOutputDir = $state(""); // folder the gallery reads from
+  const filteredOutputs = $derived(
+    filter.trim()
+      ? outputs.filter((r) => r.toLowerCase().includes(filter.trim().toLowerCase()))
+      : outputs,
+  );
 
   const canScan = $derived(!!inputDir && !scanning && !running);
   const canRender = $derived(!!inputDir && !!outputDir && !running);
@@ -51,6 +63,7 @@
         previewMsg = "";
       } else {
         outputDir = dir;
+        currentOutputDir = dir;
         await refreshOutputs();
       }
     }
@@ -72,9 +85,31 @@
     }
   }
 
+  function sanitizeLabel(s: string): string {
+    return s.trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_-]/g, "");
+  }
+
+  function makeTimestamp(): string {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return (
+      `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}` +
+      `_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`
+    );
+  }
+
+  function computeSubfolder(): string {
+    if (!useSubfolder) return "";
+    const lab = sanitizeLabel(label);
+    return lab ? `${makeTimestamp()}_${lab}` : makeTimestamp();
+  }
+
   async function doRender() {
     if (!canRender) return;
+    const subfolder = computeSubfolder();
+    currentOutputDir = subfolder ? `${outputDir}/${subfolder}` : outputDir;
     running = true;
+    stopping = false;
     current = 0;
     total = 0;
     processed = 0;
@@ -82,7 +117,13 @@
     previewSrc = "";
     lastFile = "";
     selectedIndex = -1;
-    addLog(`Starting ${mode} render (${animate && mode === "objects" ? "GIF" : format.toUpperCase()})…`);
+    filter = "";
+    outputs = [];
+    addLog(
+      `Starting ${mode} render (${animate && mode === "objects" ? "GIF" : format.toUpperCase()})` +
+        (subfolder ? ` → ${subfolder}/` : "") +
+        "…",
+    );
     try {
       await invoke("start_render", {
         inputDir,
@@ -92,6 +133,7 @@
         azimuthDeg: azimuth,
         elevationDeg: elevation,
         animate: mode === "objects" ? animate : false,
+        subfolder,
       });
     } catch (e) {
       addLog(`Failed to start: ${e}`);
@@ -99,15 +141,37 @@
     }
   }
 
+  async function stopRender() {
+    if (!running || stopping) return;
+    stopping = true;
+    addLog("Stopping after the current item…");
+    try {
+      await invoke("cancel_render");
+    } catch (e) {
+      addLog(`Stop failed: ${e}`);
+      stopping = false;
+    }
+  }
+
   // --- Gallery --------------------------------------------------------------
 
   async function refreshOutputs() {
-    if (!outputDir) return;
+    const dir = currentOutputDir || outputDir;
+    if (!dir) return;
     try {
-      outputs = await invoke<string[]>("list_outputs", { outputDir });
+      outputs = await invoke<string[]>("list_outputs", { outputDir: dir });
     } catch (e) {
       outputs = [];
     }
+  }
+
+  /// Clear the gallery view (UI only — does not delete any files on disk).
+  function clearGallery() {
+    outputs = [];
+    thumbs = {};
+    selectedIndex = -1;
+    previewSrc = "";
+    filter = "";
   }
 
   async function loadThumb(rel: string): Promise<string> {
@@ -115,7 +179,7 @@
     if (cached) return cached;
     try {
       let url = await invoke<string>("read_image_data_url", {
-        path: `${outputDir}/textures/${rel}`,
+        path: `${currentOutputDir || outputDir}/textures/${rel}`,
       });
       // Ensure GIFs animate even if the host labels them by a different mime.
       if (rel.toLowerCase().endsWith(".gif") && url.startsWith("data:image/")) {
@@ -129,9 +193,10 @@
   }
 
   async function showOutput(i: number) {
-    if (i < 0 || i >= outputs.length) return;
+    const list = filteredOutputs;
+    if (i < 0 || i >= list.length) return;
     selectedIndex = i;
-    const url = await loadThumb(outputs[i]);
+    const url = await loadThumb(list[i]);
     if (url) previewSrc = url;
     queueMicrotask(() => {
       document
@@ -158,12 +223,13 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (!outputs.length) return;
+    const list = filteredOutputs;
+    if (!list.length) return;
     const tag = (e.target as HTMLElement | null)?.tagName;
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
     let next: number;
     if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-      next = selectedIndex < 0 ? 0 : Math.min(outputs.length - 1, selectedIndex + 1);
+      next = selectedIndex < 0 ? 0 : Math.min(list.length - 1, selectedIndex + 1);
     } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
       next = selectedIndex < 0 ? 0 : Math.max(0, selectedIndex - 1);
     } else {
@@ -246,7 +312,7 @@
             processed += 1;
             if (selectedIndex < 0) {
               try {
-                const p = `${outputDir}/textures/${e.payload.file}`;
+                const p = `${currentOutputDir || outputDir}/textures/${e.payload.file}`;
                 previewSrc = await invoke<string>("read_image_data_url", { path: p });
               } catch {
                 /* preview is best-effort */
@@ -263,6 +329,7 @@
         processed = e.payload.processed;
         failed = e.payload.failed;
         running = false;
+        stopping = false;
         addLog(`Done — ${e.payload.processed} rendered, ${e.payload.failed} failed.`);
         await refreshOutputs();
       }),
@@ -334,6 +401,19 @@
         </select>
       </section>
 
+      <section class="group">
+        <label class="check">
+          <input type="checkbox" bind:checked={useSubfolder} />
+          <span>Save into a dated subfolder</span>
+        </label>
+        {#if useSubfolder}
+          <input class="textin" type="text" placeholder="Label (optional)" bind:value={label} />
+          <div class="hint">
+            Folder like <b>2026-06-22_19-30-05{label.trim() ? "_" + sanitizeLabel(label) : ""}</b>/
+          </div>
+        {/if}
+      </section>
+
       {#if mode === "objects"}
         <section class="group">
           <label class="lbl">Camera angle</label>
@@ -386,9 +466,13 @@
         <button class="btn" disabled={!canScan} onclick={doScan}>
           {scanning ? "Scanning…" : "Scan"}
         </button>
-        <button class="btn primary" disabled={!canRender} onclick={doRender}>
-          {running ? "Rendering…" : "Render"}
-        </button>
+        {#if running}
+          <button class="btn stop" disabled={stopping} onclick={stopRender}>
+            {stopping ? "Stopping…" : "Stop"}
+          </button>
+        {:else}
+          <button class="btn primary" disabled={!canRender} onclick={doRender}>Render</button>
+        {/if}
       </div>
 
       {#if scan}
@@ -432,27 +516,53 @@
       {#if outputs.length}
         <section class="gallery">
           <div class="galleryhead">
-            <span>Rendered ({outputs.length})</span>
-            <span class="hint">← → to cycle</span>
-          </div>
-          <div class="thumbs">
-            {#each outputs as rel, i (rel)}
+            <span class="gtitle">
+              {filteredOutputs.length === outputs.length
+                ? `${outputs.length} results`
+                : `${filteredOutputs.length} / ${outputs.length} results`}
+            </span>
+            <input
+              class="filter"
+              type="text"
+              placeholder="Filter by name…"
+              bind:value={filter}
+              oninput={() => (selectedIndex = -1)}
+            />
+            {#if outputs.length}
               <button
-                class="thumb"
-                class:active={i === selectedIndex}
-                data-idx={i}
-                title={rel}
-                onclick={() => showOutput(i)}
-                use:lazyload={rel}
+                class="btn ghost"
+                onclick={clearGallery}
+                title="Clear the gallery view (does not delete files)"
               >
-                {#if thumbs[rel]}
-                  <img src={thumbs[rel]} alt={rel} loading="lazy" />
-                {:else}
-                  <span class="thumbph"></span>
-                {/if}
+                Clear
               </button>
-            {/each}
+            {/if}
+            <span class="hint">← → cycle</span>
           </div>
+          {#if filteredOutputs.length}
+            <div class="thumbs">
+              {#each filteredOutputs as rel, i (rel)}
+                <div class="card" class:active={i === selectedIndex}>
+                  <button
+                    class="thumb"
+                    data-idx={i}
+                    title={rel}
+                    onclick={() => showOutput(i)}
+                    use:lazyload={rel}
+                  >
+                    {#if thumbs[rel]}
+                      <img src={thumbs[rel]} alt={rel} loading="lazy" />
+                    {:else}
+                      <span class="thumbph"></span>
+                    {/if}
+                  </button>
+                  <div class="cardlabel" title={rel}>{rel.split("/").pop()}</div>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <div class="hint nomatch">No results match “{filter}”.</div>
+          {/if}
         </section>
       {/if}
 
@@ -601,6 +711,29 @@
     border-color: transparent;
     color: white;
     box-shadow: 0 4px 14px rgba(109, 94, 252, 0.35);
+  }
+  .btn.stop {
+    background: #c0392b;
+    border-color: transparent;
+    color: white;
+  }
+  .btn.stop:hover:not(:disabled) {
+    background: #d0463a;
+  }
+  .textin {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 8px 10px;
+    font-size: 13px;
+    margin-top: 6px;
+  }
+  .textin:focus {
+    outline: none;
+    border-color: var(--accent);
   }
 
   .segmented {
@@ -794,32 +927,74 @@
   .gallery {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
   }
   .galleryhead {
     display: flex;
-    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--muted);
   }
+  .galleryhead .gtitle {
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .filter {
+    flex: 1;
+    min-width: 0;
+    background: var(--panel2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    padding: 5px 9px;
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .filter:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .nomatch {
+    padding: 14px;
+    text-align: center;
+  }
   .thumbs {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
-    gap: 6px;
-    max-height: 168px;
+    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+    gap: 10px;
+    max-height: 300px;
     overflow-y: auto;
-    padding: 6px;
+    padding: 10px;
     border: 1px solid var(--border);
     border-radius: 10px;
     background: #0b0c10;
   }
+  .card {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--panel);
+    transition: 0.12s;
+  }
+  .card.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(109, 94, 252, 0.3);
+  }
   .thumb {
     aspect-ratio: 1;
     padding: 0;
-    border: 2px solid transparent;
-    border-radius: 8px;
+    border: none;
+    border-radius: 6px;
     overflow: hidden;
     cursor: pointer;
     background:
@@ -831,14 +1006,18 @@
     object-fit: contain;
     display: block;
   }
-  .thumb.active {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(109, 94, 252, 0.35);
-  }
   .thumbph {
     display: block;
     width: 100%;
     height: 100%;
+  }
+  .cardlabel {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    text-align: center;
   }
 
   .log {
