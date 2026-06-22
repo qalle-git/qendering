@@ -5,9 +5,11 @@
 //! encoding preview images. Everything here is independent of the UI and of
 //! Blender, so it can be unit-tested in isolation.
 
+pub mod dds;
 pub mod discovery;
 pub mod error;
 pub mod filename;
 pub mod rsc7;
+pub mod ytd;
 
 pub use error::{Error, Result};
