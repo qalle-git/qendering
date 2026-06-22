@@ -191,7 +191,7 @@ def import_drawable(path) -> bool:
         return False
 
 
-def fix_missing_textures(dds_files) -> int:
+def fix_missing_textures(dds_files, use_default=True) -> int:
     if not dds_files:
         return 0
     loaded = {}
@@ -224,8 +224,12 @@ def fix_missing_textures(dds_files) -> int:
                     node.image = loaded[match_name]
                     fixed += 1
                     continue
-            node.image = default_img
-            fixed += 1
+            # Only fall back to an arbitrary texture when explicitly allowed
+            # (clothing). Objects skip this so an unmatched material stays as-is
+            # rather than getting the wrong texture.
+            if use_default:
+                node.image = default_img
+                fixed += 1
     return fixed
 
 
@@ -382,6 +386,11 @@ def render_object(item, cam_obj, work_base) -> dict:
         if get_mesh_bounding_box() is None:
             result["error"] = "No mesh geometry imported"
             return result
+        # Force-load external .ytd textures (pre-extracted to DDS by the host)
+        # that Sollumz does not auto-apply on import. Name-match only.
+        dds_files = item.get("dds_files", [])
+        if dds_files:
+            fix_missing_textures(dds_files, use_default=False)
         fix_alpha_modes()
         frame_camera_object(cam_obj)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

@@ -39,6 +39,10 @@ pub enum RenderItem {
     #[serde(rename = "object")]
     Object {
         ydr_path: String,
+        /// External `.ytd` textures pre-extracted to DDS (Sollumz does not
+        /// auto-apply external textures on `.ydr` import).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        dds_files: Vec<String>,
         output_path: String,
     },
 }
@@ -67,10 +71,17 @@ impl RenderItem {
     /// Build a standalone object item.
     ///
     /// * `ydr_path` — object drawable to import.
+    /// * `dds_files` — external `.ytd` textures pre-extracted to DDS (empty if
+    ///   the object's textures are embedded).
     /// * `output_path` — where the worker writes the rendered image.
-    pub fn object(ydr_path: impl Into<String>, output_path: impl Into<String>) -> Self {
+    pub fn object(
+        ydr_path: impl Into<String>,
+        dds_files: Vec<String>,
+        output_path: impl Into<String>,
+    ) -> Self {
         RenderItem::Object {
             ydr_path: ydr_path.into(),
+            dds_files,
             output_path: output_path.into(),
         }
     }
@@ -465,12 +476,13 @@ mod tests {
 
     #[test]
     fn object_item_json_shape() {
-        let item = RenderItem::object("C:/x/table.ydr", "C:/out/table.webp");
+        let item = RenderItem::object("C:/x/table.ydr", vec![], "C:/out/table.webp");
         let v: serde_json::Value = serde_json::from_str(&item.to_line()).unwrap();
         assert_eq!(v["type"], "object");
         assert_eq!(v["ydr_path"], "C:/x/table.ydr");
         assert_eq!(v["output_path"], "C:/out/table.webp");
         assert!(v.get("ydd_path").is_none());
+        assert!(v.get("dds_files").is_none()); // empty -> omitted
     }
 
     #[test]
@@ -513,7 +525,7 @@ mod tests {
     #[test]
     fn output_path_accessor() {
         assert_eq!(
-            RenderItem::object("a.ydr", "o.webp").output_path(),
+            RenderItem::object("a.ydr", vec![], "o.webp").output_path(),
             "o.webp"
         );
     }
@@ -564,7 +576,21 @@ mod tests {
         let out = std::env::temp_dir().join("qendering_obj_roundtrip.webp");
         let _ = std::fs::remove_file(&out);
 
-        let items = vec![RenderItem::object(ydr, out.to_string_lossy().to_string())];
+        let dds_files: Vec<String> = std::env::var("QENDERING_TEST_DDS_DIR")
+            .ok()
+            .map(|d| {
+                std::fs::read_dir(&d)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map(|x| x == "dds").unwrap_or(false))
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let items = vec![RenderItem::object(ydr, dds_files, out.to_string_lossy().to_string())];
         let results = render(
             &blender,
             Path::new(&script),

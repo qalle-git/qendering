@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -194,6 +194,79 @@ fn resolve_render_script(app: &AppHandle) -> Option<PathBuf> {
     None
 }
 
+fn collect_ytd_files(root: &Path, out: &mut Vec<PathBuf>) {
+    if let Ok(rd) = std::fs::read_dir(root) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                collect_ytd_files(&p, out);
+            } else if p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("ytd"))
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+    }
+}
+
+fn sanitize_tex_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '^') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Extract every texture from the pack's `.ytd` files to DDS in a temp dir,
+/// returning the file paths. Sollumz does not auto-apply external `.ytd`
+/// textures on `.ydr` import, so the worker force-loads these by name.
+fn extract_pack_dds(app: &AppHandle, input_root: &Path) -> Vec<String> {
+    let mut ytds = Vec::new();
+    collect_ytd_files(input_root, &mut ytds);
+    if ytds.is_empty() {
+        return Vec::new();
+    }
+    let dds_dir = std::env::temp_dir().join(format!("qendering_obj_dds_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dds_dir);
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for ytd in &ytds {
+        let Ok(res) = rsc7::parse_file(ytd) else { continue };
+        let Ok(texs) = parse_texture_dictionary(&res.virtual_data, &res.physical_data) else {
+            continue;
+        };
+        for t in &texs {
+            if t.raw_data.is_empty() {
+                continue;
+            }
+            let safe = sanitize_tex_name(&t.name);
+            if safe.is_empty() || !seen.insert(safe.to_lowercase()) {
+                continue;
+            }
+            let Ok(bytes) = qendering_core::dds::build_dds(t) else { continue };
+            let p = dds_dir.join(format!("{safe}.dds"));
+            if std::fs::write(&p, bytes).is_ok() {
+                out.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    if !out.is_empty() {
+        let _ = app.emit(
+            "log",
+            format!("Pre-extracted {} pack texture(s) for objects.", out.len()),
+        );
+    }
+    out
+}
+
 fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str) {
     let root = Path::new(input_dir);
     let ydrs = discover_ydr_objects(root);
@@ -230,6 +303,11 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
         return;
     }
 
+    // External-texture support: pre-extract the pack's .ytd textures to DDS so
+    // the worker can force-load them (Sollumz doesn't auto-apply external
+    // textures on .ydr import). Embedded-texture objects are unaffected.
+    let pack_dds = extract_pack_dds(app, root);
+
     let tex_dir = Path::new(output_dir).join("textures");
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
@@ -248,6 +326,7 @@ fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str)
         let out = tex_dir.join(format!("{name}.webp"));
         items.push(RenderItem::object(
             ydr.to_string_lossy().to_string(),
+            pack_dds.clone(),
             out.to_string_lossy().to_string(),
         ));
     }
