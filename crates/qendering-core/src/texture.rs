@@ -40,6 +40,15 @@ impl OutputFormat {
             _ => None,
         }
     }
+
+    /// Blender `image_settings.file_format` enum name for this format.
+    pub fn blender_format(self) -> &'static str {
+        match self {
+            OutputFormat::Webp => "WEBP",
+            OutputFormat::Png => "PNG",
+            OutputFormat::Jpeg => "JPEG",
+        }
+    }
 }
 
 /// Decode a texture's largest mip to an RGBA image.

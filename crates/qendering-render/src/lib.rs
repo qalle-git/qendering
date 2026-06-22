@@ -129,6 +129,9 @@ pub struct RenderConfig {
     /// Object camera elevation in degrees; `None` keeps the worker default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elevation: Option<f64>,
+    /// Blender still image format (`WEBP` / `PNG` / `JPEG`); `None` keeps WebP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub still_format: Option<String>,
 }
 
 impl RenderConfig {
@@ -138,6 +141,7 @@ impl RenderConfig {
             && self.taa_samples.is_none()
             && self.azimuth.is_none()
             && self.elevation.is_none()
+            && self.still_format.is_none()
     }
 
     fn to_line(&self) -> String {
@@ -546,6 +550,7 @@ mod tests {
             taa_samples: Some(8),
             azimuth: Some(30.0),
             elevation: Some(20.0),
+            still_format: Some("PNG".into()),
         };
         let line = cfg.to_line();
         assert!(line.starts_with("CONFIG:"));
@@ -554,6 +559,7 @@ mod tests {
         assert_eq!(v["taa_samples"], 8);
         assert_eq!(v["azimuth"], 30.0);
         assert_eq!(v["elevation"], 20.0);
+        assert_eq!(v["still_format"], "PNG");
         assert!(RenderConfig::default().is_empty());
         // angle-only config is still non-empty (worth sending)
         assert!(!RenderConfig { azimuth: Some(45.0), ..Default::default() }.is_empty());

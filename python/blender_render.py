@@ -64,6 +64,9 @@ OBJECT_AZIMUTH_DEG = 45.0
 OBJECT_ELEVATION_DEG = 25.0
 OBJECT_PADDING_FACTOR = 1.25
 
+# Still image format: WEBP / PNG (both keep alpha) or JPEG (opaque, white bg).
+STILL_FORMAT = "WEBP"
+
 
 # ---------------------------------------------------------------------------
 # Scene setup
@@ -86,15 +89,32 @@ def clear_scene() -> None:
         bpy.data.collections.remove(coll)
 
 
+def _set_world_color(scene, rgb) -> None:
+    world = scene.world or bpy.data.worlds.new("QWorld")
+    scene.world = world
+    world.use_nodes = True
+    bg = world.node_tree.nodes.get("Background")
+    if bg:
+        bg.inputs[0].default_value = (rgb[0], rgb[1], rgb[2], 1.0)
+        bg.inputs[1].default_value = 1.0
+
+
 def setup_render_settings() -> None:
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_EEVEE_NEXT"
     scene.render.resolution_x = RENDER_SIZE
     scene.render.resolution_y = RENDER_SIZE
     scene.render.resolution_percentage = 100
-    scene.render.film_transparent = True
-    scene.render.image_settings.file_format = "WEBP"
-    scene.render.image_settings.color_mode = "RGBA"
+    # JPEG has no alpha: render opaque over a white backdrop (matching the
+    # clothing pipeline's white flatten). WEBP/PNG keep a transparent film.
+    if STILL_FORMAT == "JPEG":
+        scene.render.film_transparent = False
+        scene.render.image_settings.color_mode = "RGB"
+        _set_world_color(scene, (1.0, 1.0, 1.0))
+    else:
+        scene.render.film_transparent = True
+        scene.render.image_settings.color_mode = "RGBA"
+    scene.render.image_settings.file_format = STILL_FORMAT
     scene.render.image_settings.quality = 90
     scene.render.use_simplify = True
     scene.render.simplify_subdivision = 0
@@ -433,6 +453,7 @@ def render_object(item, cam_obj, work_base) -> dict:
 
 def _apply_config(config: dict) -> None:
     global RENDER_SIZE, TAA_SAMPLES, OBJECT_AZIMUTH_DEG, OBJECT_ELEVATION_DEG
+    global STILL_FORMAT
     if "render_size" in config:
         RENDER_SIZE = int(config["render_size"])
     if "taa_samples" in config:
@@ -441,6 +462,10 @@ def _apply_config(config: dict) -> None:
         OBJECT_AZIMUTH_DEG = float(config["azimuth"])
     if "elevation" in config:
         OBJECT_ELEVATION_DEG = float(config["elevation"])
+    if "still_format" in config:
+        fmt = str(config["still_format"]).upper()
+        if fmt in ("WEBP", "PNG", "JPEG"):
+            STILL_FORMAT = fmt
 
 
 # ---------------------------------------------------------------------------

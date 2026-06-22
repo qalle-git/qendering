@@ -251,6 +251,28 @@ fn sanitize_tex_name(name: &str) -> String {
         .collect()
 }
 
+/// Temp dir holding the pack's pre-extracted DDS textures for object renders.
+fn temp_obj_dds_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("qendering_obj_dds_{}", std::process::id()))
+}
+
+/// Remove this process's stale qendering temp dirs (pre-extracted DDS, preview
+/// frames). Worker scratch dirs are cleaned by the worker on shutdown.
+fn cleanup_temp_dirs() {
+    let tmp = std::env::temp_dir();
+    let Ok(rd) = std::fs::read_dir(&tmp) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("qendering_obj_dds_")
+            || name.starts_with("qendering_preview_")
+            || name.starts_with("qendering_worker_")
+        {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Extract every texture from the pack's `.ytd` files to DDS in a temp dir,
 /// returning the file paths. Sollumz does not auto-apply external `.ytd`
 /// textures on `.ydr` import, so the worker force-loads these by name.
@@ -260,7 +282,7 @@ fn extract_pack_dds(app: &AppHandle, input_root: &Path) -> Vec<String> {
     if ytds.is_empty() {
         return Vec::new();
     }
-    let dds_dir = std::env::temp_dir().join(format!("qendering_obj_dds_{}", std::process::id()));
+    let dds_dir = temp_obj_dds_dir();
     let _ = std::fs::create_dir_all(&dds_dir);
 
     let mut seen: HashSet<String> = HashSet::new();
@@ -313,17 +335,11 @@ fn run_objects(
     let ydrs = discover_ydr_objects(root);
     let total = ydrs.len() as u32;
 
+    let fmt = OutputFormat::parse(format).unwrap_or(OutputFormat::Webp);
+
     let _ = app.emit("start", StartMsg { total });
     if total == 0 {
         let _ = app.emit("log", "No .ydr objects found under the input folder.");
-    }
-    // Objects render through Blender: stills are WebP, spins are GIF; the
-    // chosen still format isn't applied on this path yet.
-    if !animate && !format.eq_ignore_ascii_case("webp") {
-        let _ = app.emit(
-            "log",
-            "Object stills are written as WebP regardless of the selected format.",
-        );
     }
 
     let Some(blender) = qendering_render::find_blender() else {
@@ -352,9 +368,15 @@ fn run_objects(
     let config = RenderConfig {
         azimuth: Some(azimuth_deg),
         elevation: Some(elevation_deg),
+        // Spins force PNG frames internally; only stills honor the format here.
+        still_format: if animate {
+            None
+        } else {
+            Some(fmt.blender_format().to_string())
+        },
         ..Default::default()
     };
-    let ext = if animate { "gif" } else { "webp" };
+    let ext = if animate { "gif" } else { fmt.ext() };
 
     let tex_dir = output_tex_dir(output_dir, subfolder);
     let mut seen: HashMap<String, u32> = HashMap::new();
@@ -445,6 +467,10 @@ fn run_objects(
             failed += 1;
         }
     }
+
+    // Drop the pre-extracted pack DDS now that every worker is done with it.
+    let _ = std::fs::remove_dir_all(temp_obj_dds_dir());
+
     let _ = app.emit("done", DoneMsg { processed, failed });
 }
 
@@ -615,6 +641,9 @@ fn preview_turntable(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Sweep any temp dirs left behind by a previous crash before we start.
+    cleanup_temp_dirs();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

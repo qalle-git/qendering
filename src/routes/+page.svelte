@@ -241,6 +241,7 @@
 
   // --- Turntable live preview (objects) ------------------------------------
   let turntableFrames = $state<string[]>([]); // data URLs, azimuth order
+  let previewFrames = $state(24); // turntable resolution (more = smoother)
   let previewBuilding = $state(false);
   let previewMsg = $state("");
 
@@ -261,7 +262,7 @@
         inputDir,
         mode,
         elevationDeg: elevation,
-        frames: 24,
+        frames: previewFrames,
       });
       const urls: string[] = [];
       for (const p of paths) {
@@ -429,6 +430,19 @@
               max="60"
               step="1"
               bind:value={elevation}
+              onchange={() => {
+                if (turntableFrames.length) buildTurntable();
+              }}
+            />
+          </div>
+          <div class="slider">
+            <div class="sliderhead"><span>Preview frames</span><b>{previewFrames}</b></div>
+            <input
+              type="range"
+              min="8"
+              max="64"
+              step="4"
+              bind:value={previewFrames}
               onchange={() => {
                 if (turntableFrames.length) buildTurntable();
               }}
