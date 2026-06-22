@@ -89,14 +89,42 @@ def clear_scene() -> None:
         bpy.data.collections.remove(coll)
 
 
-def _set_world_color(scene, rgb) -> None:
+def _setup_world_ambient(strength=0.28) -> None:
+    """Dim neutral world so shadowed sides read instead of going pure black.
+
+    Only contributes lighting; the film stays transparent so it never tints the
+    background (a JPEG's white backdrop is composited separately).
+    """
+    scene = bpy.context.scene
     world = scene.world or bpy.data.worlds.new("QWorld")
     scene.world = world
     world.use_nodes = True
     bg = world.node_tree.nodes.get("Background")
     if bg:
-        bg.inputs[0].default_value = (rgb[0], rgb[1], rgb[2], 1.0)
-        bg.inputs[1].default_value = 1.0
+        bg.inputs[0].default_value = (0.55, 0.57, 0.6, 1.0)
+        bg.inputs[1].default_value = strength
+
+
+def _setup_white_backdrop(enable: bool) -> None:
+    """Composite the transparent render over solid white (for JPEG output).
+
+    Keeps `film_transparent` on so scene lighting is identical across formats;
+    only the saved pixels get a white background instead of black.
+    """
+    scene = bpy.context.scene
+    scene.use_nodes = enable
+    if not enable:
+        return
+    tree = scene.node_tree
+    tree.nodes.clear()
+    layers = tree.nodes.new("CompositorNodeRLayers")
+    white = tree.nodes.new("CompositorNodeRGB")
+    white.outputs[0].default_value = (1.0, 1.0, 1.0, 1.0)
+    over = tree.nodes.new("CompositorNodeAlphaOver")
+    composite = tree.nodes.new("CompositorNodeComposite")
+    tree.links.new(white.outputs[0], over.inputs[1])          # background
+    tree.links.new(layers.outputs["Image"], over.inputs[2])   # render on top
+    tree.links.new(over.outputs[0], composite.inputs[0])
 
 
 def setup_render_settings() -> None:
@@ -105,17 +133,17 @@ def setup_render_settings() -> None:
     scene.render.resolution_x = RENDER_SIZE
     scene.render.resolution_y = RENDER_SIZE
     scene.render.resolution_percentage = 100
-    # JPEG has no alpha: render opaque over a white backdrop (matching the
-    # clothing pipeline's white flatten). WEBP/PNG keep a transparent film.
-    if STILL_FORMAT == "JPEG":
-        scene.render.film_transparent = False
-        scene.render.image_settings.color_mode = "RGB"
-        _set_world_color(scene, (1.0, 1.0, 1.0))
-    else:
-        scene.render.film_transparent = True
-        scene.render.image_settings.color_mode = "RGBA"
+    scene.render.film_transparent = True
     scene.render.image_settings.file_format = STILL_FORMAT
     scene.render.image_settings.quality = 90
+    # JPEG has no alpha: flatten the transparent render onto white in the
+    # compositor. WEBP/PNG keep the transparent film as-is.
+    if STILL_FORMAT == "JPEG":
+        scene.render.image_settings.color_mode = "RGB"
+        _setup_white_backdrop(True)
+    else:
+        scene.render.image_settings.color_mode = "RGBA"
+        _setup_white_backdrop(False)
     scene.render.use_simplify = True
     scene.render.simplify_subdivision = 0
     eevee = scene.eevee
@@ -124,6 +152,16 @@ def setup_render_settings() -> None:
     for attr in ("use_gtao", "use_bloom", "use_ssr", "use_motion_blur"):
         if hasattr(eevee, attr):
             setattr(eevee, attr, False)
+
+
+# Tracks which light rig is currently in the scene so we only rebuild on change.
+_LIGHT_MODE = None
+
+
+def _clear_lights() -> None:
+    for obj in list(bpy.data.objects):
+        if obj.type == "LIGHT":
+            bpy.data.objects.remove(obj, do_unlink=True)
 
 
 def _add_light(name, light_type, energy, size, location) -> None:
@@ -138,10 +176,44 @@ def _add_light(name, light_type, energy, size, location) -> None:
     light_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
 
+def _add_sun(name, energy, rotation_deg) -> None:
+    data = bpy.data.lights.new(name=name, type="SUN")
+    data.energy = energy
+    if hasattr(data, "angle"):
+        data.angle = math.radians(4.0)  # softer contact shadows
+    obj = bpy.data.objects.new(name, data)
+    bpy.context.scene.collection.objects.link(obj)
+    obj.rotation_euler = tuple(math.radians(d) for d in rotation_deg)
+
+
 def setup_lighting() -> None:
     _add_light("KeyLight", "AREA", 150, 3, (2.5, -2.5, 3.5))
     _add_light("FillLight", "AREA", 60, 4, (-3, -1.5, 2))
     _add_light("RimLight", "AREA", 100, 2, (0, 3, 4))
+
+
+def setup_object_lighting() -> None:
+    """Sun-based three-point rig for objects.
+
+    Suns are directional, so a prop is lit identically whether it is a coffee
+    mug or a building section. Fixed-position area lights (good for clothing)
+    land inside or far from off-scale props and light them unevenly.
+    """
+    _add_sun("KeySun", 4.0, (52, 0, 35))
+    _add_sun("FillSun", 1.6, (62, 0, -120))
+    _add_sun("RimSun", 2.4, (118, 0, 190))
+
+
+def ensure_lighting(mode: str) -> None:
+    global _LIGHT_MODE
+    if _LIGHT_MODE == mode:
+        return
+    _clear_lights()
+    if mode == "object":
+        setup_object_lighting()
+    else:
+        setup_lighting()
+    _LIGHT_MODE = mode
 
 
 def setup_camera() -> "bpy.types.Object":
@@ -253,9 +325,59 @@ def fix_missing_textures(dds_files, use_default=True) -> int:
     return fixed
 
 
+def _is_glass_material(mat) -> bool:
+    """GTA glass shaders (windows, bottles, screens) by name/shader."""
+    if "glass" in (mat.name or "").lower():
+        return True
+    for attr in ("sollumz_shader_name", "shader_name"):
+        val = getattr(mat, attr, None)
+        if isinstance(val, str) and "glass" in val.lower():
+            return True
+    return False
+
+
+def _force_material_opaque(mat) -> None:
+    """Render a material fully opaque regardless of its shader graph.
+
+    Glass uses a Sollumz node group (not a plain Principled BSDF), so we drive
+    every ``Alpha`` input in the tree to 1.0 rather than only the Principled
+    one, and pin the material to an opaque render method. This removes the
+    dithered "missing pixel" speckle and back-face see-through under Eevee Next.
+    """
+    for attr, value in (
+        ("surface_render_method", "DITHERED"),  # Eevee Next opaque path
+        ("blend_method", "OPAQUE"),              # legacy Eevee
+        ("use_raytrace_refraction", False),
+        ("show_transparent_back", False),
+    ):
+        if hasattr(mat, attr):
+            try:
+                setattr(mat, attr, value)
+            except Exception:
+                pass
+    if not mat.node_tree:
+        return
+    for node in mat.node_tree.nodes:
+        alpha_in = getattr(node, "inputs", {}).get("Alpha") if hasattr(node, "inputs") else None
+        if alpha_in is None:
+            continue
+        if alpha_in.is_linked:
+            for link in list(mat.node_tree.links):
+                if link.to_socket == alpha_in:
+                    mat.node_tree.links.remove(link)
+        try:
+            alpha_in.default_value = 1.0
+        except Exception:
+            pass
+
+
 def fix_alpha_modes() -> int:
     fixed = 0
     for mat in bpy.data.materials:
+        if _is_glass_material(mat):
+            _force_material_opaque(mat)
+            fixed += 1
+            continue
         if mat.blend_method in ("BLEND", "HASHED"):
             mat.blend_method = "CLIP"
             mat.alpha_threshold = 0.01
@@ -376,6 +498,7 @@ def render_item(item, cam_obj, work_base) -> dict:
 
         fix_missing_textures(dds_files)
         fix_alpha_modes()
+        ensure_lighting("clothing")
         frame_camera(cam_obj, elevation_deg=item.get("camera_elevation"))
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -413,6 +536,7 @@ def render_object(item, cam_obj, work_base) -> dict:
         if dds_files:
             fix_missing_textures(dds_files, use_default=False)
         fix_alpha_modes()
+        ensure_lighting("object")
 
         if frames and int(frames) > 1:
             # Spin: render N frames over a full 360° as PNGs (for GIF assembly).
@@ -475,7 +599,9 @@ def _apply_config(config: dict) -> None:
 def worker_main() -> None:
     clear_scene()
     setup_render_settings()
-    setup_lighting()
+    _setup_world_ambient()
+    # The light rig (area for clothing, suns for objects) is built lazily per
+    # item by ensure_lighting() so each item type gets the right one.
     cam_obj = setup_camera()
     work_base = tempfile.mkdtemp(prefix="qendering_worker_")
 
