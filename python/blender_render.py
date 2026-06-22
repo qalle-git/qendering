@@ -423,7 +423,9 @@ def is_mesh_flat(depth_ratio: float = 0.05) -> bool:
     return size.y / span < depth_ratio
 
 
-def frame_camera(cam_obj, elevation_deg=None) -> None:
+def frame_camera(cam_obj, azimuth_deg=0.0, elevation_deg=None) -> None:
+    """Frame a clothing drawable. Azimuth 0 faces it head-on (-Y); increasing
+    azimuth orbits the camera around the vertical axis for a 3/4 view."""
     bbox = get_mesh_bounding_box()
     if bbox is None:
         return
@@ -432,13 +434,18 @@ def frame_camera(cam_obj, elevation_deg=None) -> None:
     size = bb_max - bb_min
     elev = CAMERA_ELEVATION_DEG if elevation_deg is None else elevation_deg
     er = math.radians(elev)
-    visible_w = size.x
-    visible_h = size.z * math.cos(er) + size.y * math.sin(er)
+    az = math.radians(azimuth_deg)
+    # Projected extents at this azimuth (exactly size.x / size.y at azimuth 0).
+    visible_w = abs(size.x * math.cos(az)) + abs(size.y * math.sin(az))
+    depth = abs(size.x * math.sin(az)) + abs(size.y * math.cos(az))
+    visible_h = size.z * math.cos(er) + depth * math.sin(er)
     cam_obj.data.ortho_scale = max(visible_w, visible_h) * PADDING_FACTOR
-    distance = max(size.y, 5)
+    distance = max(size.x, size.y, size.z, 5)
+    # Horizontal view direction: azimuth 0 -> -Y (front of the piece).
+    horiz = Vector((math.sin(az), -math.cos(az), 0))
     cam_obj.location = Vector((
-        center.x,
-        center.y - distance * math.cos(er),
+        center.x + horiz.x * distance * math.cos(er),
+        center.y + horiz.y * distance * math.cos(er),
         center.z + distance * math.sin(er),
     ))
     direction = center - cam_obj.location
@@ -499,7 +506,13 @@ def render_item(item, cam_obj, work_base) -> dict:
         fix_missing_textures(dds_files)
         fix_alpha_modes()
         ensure_lighting("clothing")
-        frame_camera(cam_obj, elevation_deg=item.get("camera_elevation"))
+        # Camera angle comes from the CONFIG azimuth/elevation (the UI sliders);
+        # an item-level camera_elevation still overrides if present.
+        frame_camera(
+            cam_obj,
+            azimuth_deg=OBJECT_AZIMUTH_DEG,
+            elevation_deg=item.get("camera_elevation", OBJECT_ELEVATION_DEG),
+        )
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         bpy.context.scene.render.filepath = output_path

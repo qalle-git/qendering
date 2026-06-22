@@ -437,7 +437,7 @@
         {/if}
       </section>
 
-      {#if mode === "objects"}
+      {#if mode === "objects" || (mode === "clothing" && clothing3d)}
         <section class="group">
           <label class="lbl">Camera angle</label>
           <div class="slider">
@@ -457,6 +457,14 @@
               }}
             />
           </div>
+          {#if mode === "clothing"}
+            <div class="hint">Azimuth <b>0°</b> faces the piece head-on; raise it for a 3/4 view.</div>
+          {/if}
+        </section>
+      {/if}
+
+      {#if mode === "objects"}
+        <section class="group">
           <div class="slider">
             <div class="sliderhead"><span>Preview frames</span><b>{previewFrames}</b></div>
             <input

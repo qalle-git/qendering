@@ -13,6 +13,14 @@ Stable and feature-complete. Windows installers are published on every release;
 see the [Releases](https://github.com/qalle-git/qendering/releases) page for the
 latest `.exe` / `.msi`.
 
+## Demo
+
+https://github.com/qalle-git/qendering/raw/main/docs/qendering.mp4
+
+<video src="https://github.com/qalle-git/qendering/raw/main/docs/qendering.mp4" controls width="100%"></video>
+
+(If the player does not load, use the [direct link](docs/qendering.mp4).)
+
 ## Features
 
 - **Two render modes**

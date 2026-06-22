@@ -440,11 +440,14 @@ fn extract_ytd_to_dir(ytd: &Path, dest: &Path) -> Vec<String> {
 /// 3D clothing render: import each paired `.ydd` drawable in Blender (applying
 /// its `.ytd` textures) and render a front-facing still, instead of the flat
 /// texture-extraction pipeline in [`run_flat`].
+#[allow(clippy::too_many_arguments)]
 fn run_clothing_3d(
     app: &AppHandle,
     input_dir: &str,
     output_dir: &str,
     format: &str,
+    azimuth_deg: f64,
+    elevation_deg: f64,
     subfolder: &str,
     cancel: Arc<AtomicBool>,
 ) {
@@ -469,6 +472,8 @@ fn run_clothing_3d(
     };
 
     let config = RenderConfig {
+        azimuth: Some(azimuth_deg),
+        elevation: Some(elevation_deg),
         still_format: Some(fmt.blender_format().to_string()),
         ..Default::default()
     };
@@ -881,7 +886,16 @@ fn start_render(
                 cancel,
             );
         } else if clothing3d {
-            run_clothing_3d(&app, &input_dir, &output_dir, &format, &subfolder, cancel);
+            run_clothing_3d(
+                &app,
+                &input_dir,
+                &output_dir,
+                &format,
+                azimuth_deg,
+                elevation_deg,
+                &subfolder,
+                cancel,
+            );
         } else {
             run_flat(&app, &input_dir, &output_dir, &format, &subfolder, &cancel);
         }
