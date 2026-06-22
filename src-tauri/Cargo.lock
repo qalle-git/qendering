@@ -3124,6 +3124,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "qendering-core",
+ "qendering-render",
  "serde",
  "serde_json",
  "tauri",
@@ -3143,6 +3144,14 @@ dependencies = [
  "thiserror 2.0.18",
  "walkdir",
  "webp",
+]
+
+[[package]]
+name = "qendering-render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

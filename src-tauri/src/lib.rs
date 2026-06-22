@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+
+use qendering_render::{RenderConfig, RenderItem};
 
 use qendering_core::discovery::{discover_ydr_objects, discover_ytd_base_files, find_ydd_for_ytd};
 use qendering_core::filename::parse_ytd_filename;
@@ -153,18 +155,145 @@ fn run_flat(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str) {
     let _ = app.emit("done", DoneMsg { processed, failed });
 }
 
+// ---------------------------------------------------------------------------
+// objects (3D render via the Blender bridge)
+// ---------------------------------------------------------------------------
+
+/// Locate `blender_render.py`: the bundled resource first, then walk up from
+/// the executable and working directory (dev builds).
+fn resolve_render_script(app: &AppHandle) -> Option<PathBuf> {
+    if let Ok(p) = app
+        .path()
+        .resolve("python/blender_render.py", tauri::path::BaseDirectory::Resource)
+    {
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+
+    let mut starts: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(d) = exe.parent() {
+            starts.push(d.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        starts.push(cwd);
+    }
+    for start in starts {
+        let mut cur = Some(start);
+        for _ in 0..8 {
+            let Some(dir) = cur else { break };
+            let cand = dir.join("python").join("blender_render.py");
+            if cand.is_file() {
+                return Some(cand);
+            }
+            cur = dir.parent().map(Path::to_path_buf);
+        }
+    }
+    None
+}
+
+fn run_objects(app: &AppHandle, input_dir: &str, output_dir: &str, format: &str) {
+    let root = Path::new(input_dir);
+    let ydrs = discover_ydr_objects(root);
+    let total = ydrs.len() as u32;
+
+    let _ = app.emit("start", StartMsg { total });
+    if total == 0 {
+        let _ = app.emit("log", "No .ydr objects found under the input folder.");
+    }
+    // Objects render through Blender, which writes WebP; other formats aren't
+    // supported on this path yet.
+    if !format.eq_ignore_ascii_case("webp") {
+        let _ = app.emit(
+            "log",
+            "Object previews are written as WebP regardless of the selected format.",
+        );
+    }
+
+    let Some(blender) = qendering_render::find_blender() else {
+        let _ = app.emit(
+            "log",
+            "Blender not found. Install Blender 4.x with the Sollumz add-on to render objects.",
+        );
+        let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
+        return;
+    };
+    let Some(script) = resolve_render_script(app) else {
+        let _ = app.emit("log", "Could not locate blender_render.py.");
+        let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
+        return;
+    };
+    if total == 0 {
+        let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
+        return;
+    }
+
+    let tex_dir = Path::new(output_dir).join("textures");
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    let mut items: Vec<RenderItem> = Vec::with_capacity(ydrs.len());
+    for ydr in &ydrs {
+        let base = ydr
+            .file_stem()
+            .map(|s| s.to_string_lossy().replace('^', "_"))
+            .unwrap_or_else(|| "object".to_string());
+        let n = seen.entry(base.clone()).or_insert(0);
+        let name = if *n == 0 {
+            base.clone()
+        } else {
+            format!("{base}_{}", *n + 1)
+        };
+        *n += 1;
+        let out = tex_dir.join(format!("{name}.webp"));
+        items.push(RenderItem::object(
+            ydr.to_string_lossy().to_string(),
+            out.to_string_lossy().to_string(),
+        ));
+    }
+
+    let app_cb = app.clone();
+    let results = qendering_render::render(
+        &blender,
+        &script,
+        items,
+        0,
+        RenderConfig::default(),
+        move |rr, done, total| {
+            let file = Path::new(&rr.output_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let _ = app_cb.emit(
+                "progress",
+                Progress {
+                    current: done as u32,
+                    total: total as u32,
+                    file,
+                    ok: rr.success,
+                },
+            );
+            if !rr.success {
+                if let Some(e) = &rr.error {
+                    let _ = app_cb.emit("log", format!("FAIL {}: {e}", rr.output_path));
+                }
+            }
+        },
+    );
+
+    let processed = results.iter().filter(|r| r.success).count() as u32;
+    let failed = results.len() as u32 - processed;
+    let _ = app.emit("done", DoneMsg { processed, failed });
+}
+
 #[tauri::command]
 fn start_render(app: AppHandle, input_dir: String, output_dir: String, format: String, mode: String) {
     std::thread::spawn(move || {
         if mode == "objects" {
-            let _ = app.emit(
-                "log",
-                "Object (.ydr) 3D rendering is not wired up yet — it arrives with the Blender render bridge.",
-            );
-            let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
-            return;
+            run_objects(&app, &input_dir, &output_dir, &format);
+        } else {
+            run_flat(&app, &input_dir, &output_dir, &format);
         }
-        run_flat(&app, &input_dir, &output_dir, &format);
     });
 }
 

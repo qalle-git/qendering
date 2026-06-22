@@ -547,4 +547,39 @@ mod tests {
         let name = found.file_name().unwrap().to_string_lossy().to_lowercase();
         assert!(name.starts_with("blender"), "unexpected exe: {name}");
     }
+
+    /// Real Rust -> Python -> Blender round trip for one object. Set
+    /// QENDERING_TEST_YDR and QENDERING_TEST_SCRIPT to run; skipped in CI.
+    #[test]
+    fn real_object_round_trip() {
+        let (Ok(ydr), Ok(script)) = (
+            std::env::var("QENDERING_TEST_YDR"),
+            std::env::var("QENDERING_TEST_SCRIPT"),
+        ) else {
+            return;
+        };
+        let Some(blender) = find_blender() else {
+            return;
+        };
+        let out = std::env::temp_dir().join("qendering_obj_roundtrip.webp");
+        let _ = std::fs::remove_file(&out);
+
+        let items = vec![RenderItem::object(ydr, out.to_string_lossy().to_string())];
+        let results = render(
+            &blender,
+            Path::new(&script),
+            items,
+            1,
+            RenderConfig::default(),
+            |_, _, _| {},
+        );
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success, "render failed: {:?}", results[0].error);
+        assert!(out.is_file(), "no output produced");
+        eprintln!(
+            "rendered object -> {} ({} bytes)",
+            out.display(),
+            std::fs::metadata(&out).unwrap().len()
+        );
+    }
 }
