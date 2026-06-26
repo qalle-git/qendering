@@ -127,9 +127,26 @@ def _setup_white_backdrop(enable: bool) -> None:
     tree.links.new(over.outputs[0], composite.inputs[0])
 
 
+def _eevee_engine_id() -> str:
+    """Return the correct Eevee engine identifier for this Blender version.
+
+    Blender 4.2-4.4 expose the new Eevee as ``BLENDER_EEVEE_NEXT``; Blender 5.0
+    dropped legacy Eevee and renamed it back to ``BLENDER_EEVEE``. Probe the
+    actual enum so we pick whichever exists instead of guessing by version.
+    """
+    try:
+        items = bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items
+        ids = {i.identifier for i in items}
+    except Exception:
+        ids = set()
+    if "BLENDER_EEVEE_NEXT" in ids:
+        return "BLENDER_EEVEE_NEXT"
+    return "BLENDER_EEVEE"
+
+
 def setup_render_settings() -> None:
     scene = bpy.context.scene
-    scene.render.engine = "BLENDER_EEVEE_NEXT"
+    scene.render.engine = _eevee_engine_id()
     scene.render.resolution_x = RENDER_SIZE
     scene.render.resolution_y = RENDER_SIZE
     scene.render.resolution_percentage = 100
@@ -378,7 +395,9 @@ def fix_alpha_modes() -> int:
             _force_material_opaque(mat)
             fixed += 1
             continue
-        if mat.blend_method in ("BLEND", "HASHED"):
+        # `blend_method` was removed in Blender 4.3+ (Eevee Next handles alpha
+        # via the shader graph); only touch it where it still exists.
+        if hasattr(mat, "blend_method") and mat.blend_method in ("BLEND", "HASHED"):
             mat.blend_method = "CLIP"
             mat.alpha_threshold = 0.01
             fixed += 1

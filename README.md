@@ -103,8 +103,9 @@ extension, and `source` is the top-level pack/DLC folder the model came from.
 The Clothing mode is self-contained. The Objects mode renders through Blender,
 so that machine also needs:
 
-- **Blender 4.x** with the **Sollumz** add-on, plus **PyMateria** for binary
-  `.ydd` / `.ydr` import.
+- **Blender 4.2+ or 5.x** with the **Sollumz** add-on, plus **PyMateria** for
+  binary `.ydd` / `.ydr` import. The renderer picks the correct Eevee engine
+  automatically (`BLENDER_EEVEE_NEXT` on 4.x, `BLENDER_EEVEE` on 5.x).
 
 Qendering detects Blender automatically (PATH, then the standard Windows install
 locations).

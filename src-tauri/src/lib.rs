@@ -462,7 +462,7 @@ fn run_clothing_3d(
         let _ = app.emit("start", StartMsg { total: 0 });
         let _ = app.emit(
             "log",
-            "Blender not found. Install Blender 4.x with the Sollumz add-on for 3D clothing.",
+            "Blender not found. Install Blender 4.2+ or 5.x with the Sollumz add-on for 3D clothing.",
         );
         let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
         return;
@@ -765,7 +765,7 @@ fn run_objects(
     let Some(blender) = qendering_render::find_blender() else {
         let _ = app.emit(
             "log",
-            "Blender not found. Install Blender 4.x with the Sollumz add-on to render objects.",
+            "Blender not found. Install Blender 4.2+ or 5.x with the Sollumz add-on to render objects.",
         );
         let _ = app.emit("done", DoneMsg { processed: 0, failed: 0 });
         return;
@@ -995,7 +995,7 @@ fn preview_turntable(
         .ok_or_else(|| "No .ydr objects found in the folder.".to_string())?;
 
     let blender = qendering_render::find_blender()
-        .ok_or_else(|| "Blender not found. Install Blender 4.x with Sollumz.".to_string())?;
+        .ok_or_else(|| "Blender not found. Install Blender 4.2+ or 5.x with Sollumz.".to_string())?;
     let script = resolve_render_script(&app)
         .ok_or_else(|| "Could not locate blender_render.py.".to_string())?;
     let pack_dds = extract_pack_dds(&app, root);
