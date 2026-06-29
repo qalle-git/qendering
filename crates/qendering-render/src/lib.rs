@@ -178,8 +178,8 @@ enum WorkerError {
     Timeout,
 }
 
-/// Locate the Blender executable, searching `PATH` then the known Windows
-/// install directories (newest version first).
+/// Locate the Blender executable, searching `PATH`, then the official Windows
+/// install directories (newest version first), then a Steam-installed Blender.
 pub fn find_blender() -> Option<PathBuf> {
     let exe = if cfg!(windows) { "blender.exe" } else { "blender" };
 
@@ -203,9 +203,68 @@ pub fn find_blender() -> Option<PathBuf> {
                 return Some(p);
             }
         }
+
+        if let Some(p) = find_steam_blender() {
+            return Some(p);
+        }
     }
 
     None
+}
+
+/// Locate a Steam-installed Blender (Steam app, folder `steamapps/common/Blender`).
+/// Steam libraries can live on any drive, so read `libraryfolders.vdf` to find
+/// every library root, falling back to the default Steam install location.
+fn find_steam_blender() -> Option<PathBuf> {
+    let mut libraries: Vec<PathBuf> = Vec::new();
+    for var in ["ProgramFiles(x86)", "ProgramFiles"] {
+        if let Ok(pf) = std::env::var(var) {
+            libraries.push(PathBuf::from(pf).join("Steam"));
+        }
+    }
+
+    // Steam records extra library folders (other drives) in libraryfolders.vdf.
+    for steam in libraries.clone() {
+        for vdf in [
+            steam.join("steamapps").join("libraryfolders.vdf"),
+            steam.join("config").join("libraryfolders.vdf"),
+        ] {
+            if let Ok(text) = std::fs::read_to_string(&vdf) {
+                for path in parse_vdf_library_paths(&text) {
+                    libraries.push(PathBuf::from(path));
+                }
+            }
+        }
+    }
+
+    for lib in libraries {
+        let candidate = lib
+            .join("steamapps")
+            .join("common")
+            .join("Blender")
+            .join("blender.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Extract the `"path"  "..."` values from a Steam `libraryfolders.vdf`,
+/// unescaping the doubled backslashes Valve writes in the file.
+fn parse_vdf_library_paths(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("\"path\"") {
+            continue;
+        }
+        // The value is the last double-quoted token on the line.
+        if let Some(value) = trimmed.rsplit('"').nth(1) {
+            out.push(value.replace("\\\\", "\\"));
+        }
+    }
+    out
 }
 
 /// A persistent Blender subprocess with a background stdout reader.
@@ -539,6 +598,32 @@ fn drain_remaining_as_failures(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_steam_library_paths_from_vdf() {
+        let vdf = r#"
+"libraryfolders"
+{
+	"0"
+	{
+		"path"		"C:\\Program Files (x86)\\Steam"
+		"label"		""
+	}
+	"1"
+	{
+		"path"		"D:\\SteamLibrary"
+	}
+}
+"#;
+        let paths = parse_vdf_library_paths(vdf);
+        assert_eq!(
+            paths,
+            vec![
+                "C:\\Program Files (x86)\\Steam".to_string(),
+                "D:\\SteamLibrary".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn object_item_json_shape() {

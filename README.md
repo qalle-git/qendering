@@ -107,8 +107,9 @@ so that machine also needs:
   binary `.ydd` / `.ydr` import. The renderer picks the correct Eevee engine
   automatically (`BLENDER_EEVEE_NEXT` on 4.x, `BLENDER_EEVEE` on 5.x).
 
-Qendering detects Blender automatically (PATH, then the standard Windows install
-locations).
+Qendering detects Blender automatically: `PATH` first, then the standard Windows
+install locations, then a Steam-installed Blender (read from Steam's
+`libraryfolders.vdf`, so it is found on any library drive).
 
 ## Usage
 
