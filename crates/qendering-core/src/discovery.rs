@@ -28,6 +28,15 @@ static BASE_GAME_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(?P<prefix>[a-z_]+)_diff_(?P<drawable>\d+)_[a-z](?:_[a-z]+)?\.ytd$").unwrap()
 });
 
+/// Full parse of a clothing `.ytd` name: prefix, drawable id, and the single
+/// variant letter (`a`, `b`, ...), with an optional race suffix (`_uni`).
+static YTD_VARIANT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?P<prefix>.+?)_diff_(?P<drawable>\d+)_(?P<variant>[a-z])(?P<race>_[a-z]+)?\.ytd$",
+    )
+    .unwrap()
+});
+
 /// Minimum `.ydd` size; smaller files are stub/placeholder drawables with no
 /// real mesh and are skipped during pairing.
 const MIN_YDD_SIZE: u64 = 1024;
@@ -64,6 +73,65 @@ pub fn discover_ytd_base_files(input_dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// The single variant letter (`a`, `b`, ...) of a clothing `.ytd`, lowercased,
+/// or `None` if the name is not a `*_diff_NNN_<letter>*.ytd` texture.
+pub fn variant_letter(ytd_path: &Path) -> Option<char> {
+    let name = ytd_path.file_name()?.to_string_lossy().to_string();
+    let caps = YTD_VARIANT_RE.captures(&name)?;
+    caps["variant"].chars().next().map(|c| c.to_ascii_lowercase())
+}
+
+/// All texture variants of the drawable that `base_ytd` belongs to: sibling
+/// `.ytd` files in the same directory sharing the same `{prefix}_diff_{drawable}`
+/// and race suffix but any single variant letter, sorted by letter (`a`, `b`, ...).
+///
+/// `base_ytd` itself is included. Returns just `base_ytd` if its name cannot be
+/// parsed, so callers can treat the result as "one or more variants".
+pub fn variant_ytds_for(base_ytd: &Path) -> Vec<PathBuf> {
+    let Some(name) = base_ytd.file_name().map(|n| n.to_string_lossy().to_string()) else {
+        return vec![base_ytd.to_path_buf()];
+    };
+    let Some(caps) = YTD_VARIANT_RE.captures(&name) else {
+        return vec![base_ytd.to_path_buf()];
+    };
+    let prefix = caps["prefix"].to_lowercase();
+    let drawable = caps["drawable"].to_string();
+    let race = caps
+        .name("race")
+        .map(|m| m.as_str().to_lowercase())
+        .unwrap_or_default();
+    let directory = base_ytd.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut out: Vec<(char, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(directory) {
+        for entry in entries.filter_map(Result::ok) {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let n = file_name_lower(&p);
+            let Some(c) = YTD_VARIANT_RE.captures(&n) else {
+                continue;
+            };
+            // Same drawable, same race suffix (so `_uni` and `_whi` don't mix).
+            if c["prefix"].to_lowercase() == prefix
+                && c["drawable"] == drawable
+                && c.name("race").map(|m| m.as_str()).unwrap_or("") == race
+            {
+                if let Some(letter) = c["variant"].chars().next() {
+                    out.push((letter.to_ascii_lowercase(), p));
+                }
+            }
+        }
+    }
+
+    if out.is_empty() {
+        return vec![base_ytd.to_path_buf()];
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    out.into_iter().map(|(_, p)| p).collect()
 }
 
 /// Recursively find standalone object drawables (`.ydr`) under `input_dir`.
@@ -220,6 +288,53 @@ mod tests {
         assert_eq!(found.len(), 2, "got {names:?}");
         assert!(names.iter().any(|n| n == "m^accs_diff_000_a_uni.ytd"));
         assert!(names.iter().any(|n| n == "m^accs_diff_001_a_whi.ytd"));
+    }
+
+    #[test]
+    fn finds_all_variants_of_a_drawable() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path().join("stream");
+        let base = d.join("mp_m_freemode_01^jbib_diff_002_a_uni.ytd");
+        write_sized(&base, 10);
+        write_sized(&d.join("mp_m_freemode_01^jbib_diff_002_b_uni.ytd"), 10);
+        write_sized(&d.join("mp_m_freemode_01^jbib_diff_002_c_uni.ytd"), 10);
+        // Different drawable id -> excluded.
+        write_sized(&d.join("mp_m_freemode_01^jbib_diff_003_a_uni.ytd"), 10);
+        // Different race suffix -> excluded (kept separate).
+        write_sized(&d.join("mp_m_freemode_01^jbib_diff_002_a_whi.ytd"), 10);
+
+        let variants = variant_ytds_for(&base);
+        let names: Vec<String> = variants
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names.len(), 3, "got {names:?}");
+        assert!(names[0].ends_with("002_a_uni.ytd"));
+        assert!(names[1].ends_with("002_b_uni.ytd"));
+        assert!(names[2].ends_with("002_c_uni.ytd"));
+    }
+
+    #[test]
+    fn variant_letter_parsing() {
+        assert_eq!(
+            variant_letter(Path::new("x^jbib_diff_002_b_uni.ytd")),
+            Some('b')
+        );
+        assert_eq!(
+            variant_letter(Path::new("jbib_diff_010_a.ytd")),
+            Some('a')
+        );
+        assert_eq!(variant_letter(Path::new("not_a_texture.ytd")), None);
+    }
+
+    #[test]
+    fn variant_ytds_falls_back_to_self_when_unparseable() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("weird_name.ytd");
+        write_sized(&p, 10);
+        let variants = variant_ytds_for(&p);
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0], p);
     }
 
     #[test]

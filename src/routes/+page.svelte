@@ -21,6 +21,7 @@
   // Clothing: 3D-render the .ydd drawable in Blender instead of the fast flat
   // texture extraction.
   let clothing3d = $state(false);
+  let variations = $state(false);
   // Skip a Blender item that hangs longer than this (seconds).
   let timeoutSecs = $state(30);
 
@@ -224,6 +225,7 @@
         batch: mode === "objects" ? batch : false,
         clothing3d: mode === "clothing" ? clothing3d : false,
         timeoutSecs: Math.max(3, Math.round(timeoutSecs) || 30),
+        variations: mode === "clothing" && clothing3d ? variations : false,
       });
     } catch (e) {
       addLog(`Failed to start: ${e}`);
@@ -566,6 +568,17 @@
                 ? "Imports each .ydd drawable for a true 3D preview (needs Blender + Sollumz)."
                 : "Fast flat texture extraction from the .ytd — no Blender needed."}
             </p>
+            {#if clothing3d}
+              <label class="check">
+                <input type="checkbox" bind:checked={variations} />
+                <span>All texture variations</span>
+              </label>
+              <p class="hint">
+                {variations
+                  ? "Renders every swatch (_a, _b, _c, …) of each garment, one shot per variant."
+                  : "Renders only the base variant of each garment."}
+              </p>
+            {/if}
           {/if}
 
           {#if mode === "objects" || (mode === "clothing" && clothing3d) || mode === "weapons"}

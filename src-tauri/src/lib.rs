@@ -451,6 +451,7 @@ fn run_clothing_3d(
     elevation_deg: f64,
     subfolder: &str,
     timeout_secs: u64,
+    variations: bool,
     cancel: Arc<AtomicBool>,
 ) {
     let item_timeout = Duration::from_secs(timeout_secs.max(3));
@@ -490,28 +491,50 @@ fn run_clothing_3d(
     let mut items: Vec<RenderItem> = Vec::new();
     let mut source_by_file: HashMap<String, Option<String>> = HashMap::new();
     let mut skipped = 0u32;
-    for (i, ytd) in ytds.iter().enumerate() {
+    let mut slot = 0usize;
+    for ytd in ytds.iter() {
         let Some(ydd) = find_ydd_for_ytd(ytd) else {
             skipped += 1;
             continue;
         };
         let base = output_base_name(ytd);
-        let n = seen.entry(base.clone()).or_insert(0);
-        let name = if *n == 0 {
-            base.clone()
+        // In variations mode, render every texture variant of this drawable
+        // (`_a`, `_b`, ...) against the same mesh; otherwise just the base ytd.
+        let variant_ytds = if variations {
+            qendering_core::discovery::variant_ytds_for(ytd)
         } else {
-            format!("{base}_{}", *n + 1)
+            vec![ytd.clone()]
         };
-        *n += 1;
-        let file = format!("{name}.{ext}");
-        let dds = extract_ytd_to_dir(ytd, &dds_root.join(format!("i{i}")));
-        let out = tex_dir.join(&file);
-        source_by_file.insert(file.clone(), source_label(ytd, root));
-        items.push(RenderItem::clothing(
-            ydd.to_string_lossy().to_string(),
-            dds,
-            out.to_string_lossy().to_string(),
-        ));
+        for variant in &variant_ytds {
+            // Variations mode suffixes every output with its swatch letter so
+            // they pair with the in-game variants; single mode keeps the plain
+            // base name (with a numeric de-dup suffix on collision).
+            let stem = if variations {
+                match qendering_core::discovery::variant_letter(variant) {
+                    Some(letter) => format!("{base}_{letter}"),
+                    None => base.clone(),
+                }
+            } else {
+                base.clone()
+            };
+            let n = seen.entry(stem.clone()).or_insert(0);
+            let name = if *n == 0 {
+                stem.clone()
+            } else {
+                format!("{stem}_{}", *n + 1)
+            };
+            *n += 1;
+            let file = format!("{name}.{ext}");
+            let dds = extract_ytd_to_dir(variant, &dds_root.join(format!("i{slot}")));
+            slot += 1;
+            let out = tex_dir.join(&file);
+            source_by_file.insert(file.clone(), source_label(variant, root));
+            items.push(RenderItem::clothing(
+                ydd.to_string_lossy().to_string(),
+                dds,
+                out.to_string_lossy().to_string(),
+            ));
+        }
     }
 
     let total = items.len() as u32;
@@ -877,6 +900,7 @@ fn start_render(
     batch: bool,
     clothing3d: bool,
     timeout_secs: u64,
+    variations: bool,
 ) {
     let cancel = state.0.clone();
     cancel.store(false, Ordering::Relaxed);
@@ -905,6 +929,7 @@ fn start_render(
                 elevation_deg,
                 &subfolder,
                 timeout_secs,
+                variations,
                 cancel,
             );
         } else {
