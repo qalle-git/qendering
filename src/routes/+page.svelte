@@ -2,6 +2,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { check, type Update } from "@tauri-apps/plugin-updater";
+  import { relaunch } from "@tauri-apps/plugin-process";
 
   type DlcCount = { name: string; items: number };
   type ScanResult = { clothing_total: number; dlcs: DlcCount[]; objects: number };
@@ -69,6 +71,49 @@
 
   function addLog(msg: string) {
     log = [...log.slice(-400), msg];
+  }
+
+  // ---- Auto-updater ----------------------------------------------------------
+  let update = $state<Update | null>(null); // pending update, if any
+  let updateDismissed = $state(false);
+  let updating = $state(false);
+  let updatePct = $state(0);
+
+  async function checkForUpdate() {
+    try {
+      const found = await check();
+      if (found) {
+        update = found;
+        addLog(`Update available: v${found.version}.`);
+      }
+    } catch (e) {
+      // Never block usage on a failed check (offline, rate-limited, etc.).
+      addLog(`Update check skipped: ${e}`);
+    }
+  }
+
+  async function installUpdate() {
+    if (!update || updating) return;
+    updating = true;
+    updatePct = 0;
+    let total = 0;
+    let downloaded = 0;
+    try {
+      addLog(`Downloading update v${update.version}…`);
+      await update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          total = event.data.contentLength ?? 0;
+        } else if (event.event === "Progress") {
+          downloaded += event.data.chunkLength;
+          updatePct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+        }
+      });
+      addLog("Update installed. Restarting…");
+      await relaunch();
+    } catch (e) {
+      updating = false;
+      addLog(`Update failed: ${e}`);
+    }
   }
 
   async function pick(which: "in" | "out") {
@@ -436,6 +481,7 @@
     unlisteners.push(listen<string>("log", (e) => addLog(e.payload)));
 
     window.addEventListener("keydown", onKey);
+    checkForUpdate();
 
     return () => {
       unlisteners.forEach((u) => u.then((fn) => fn()).catch(() => {}));
@@ -466,6 +512,29 @@
       {running || weaponBuilding ? "Rendering" : "Ready"}
     </div>
   </header>
+
+  {#if update && !updateDismissed}
+    <div class="updatebar" role="status">
+      <span class="upd-icon">↑</span>
+      <div class="upd-text">
+        <b>Update available</b>
+        <span class="upd-ver">v{update.version} is ready to install.</span>
+      </div>
+      {#if updating}
+        <div class="upd-progress">
+          <div class="upd-fill" style="width:{updatePct}%"></div>
+        </div>
+        <span class="upd-pct">{updatePct}%</span>
+      {:else}
+        <button class="btn sm ghost" onclick={() => (updateDismissed = true)}>
+          Later
+        </button>
+        <button class="btn sm primary" onclick={installUpdate}>
+          Install &amp; restart
+        </button>
+      {/if}
+    </div>
+  {/if}
 
   <div class="body">
     <aside class="panel">
@@ -1030,6 +1099,55 @@
   }
 
   /* --- Buttons --- */
+  .updatebar {
+    display: flex;
+    align-items: center;
+    gap: var(--s3);
+    padding: var(--s2) var(--s4);
+    background: var(--accent-soft);
+    border-bottom: 1px solid var(--accent);
+    color: var(--text);
+    font-size: 13px;
+  }
+  .upd-icon {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    flex: none;
+  }
+  .upd-text {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s2);
+    margin-right: auto;
+  }
+  .upd-ver {
+    color: var(--text-dim);
+  }
+  .upd-progress {
+    width: 160px;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--elev2);
+    overflow: hidden;
+  }
+  .upd-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s;
+  }
+  .upd-pct {
+    font-variant-numeric: tabular-nums;
+    color: var(--text-dim);
+    min-width: 34px;
+    text-align: right;
+  }
+
   .btn {
     border: 1px solid var(--border);
     background: var(--elev);
