@@ -607,6 +607,145 @@ def render_object(item, cam_obj, work_base) -> dict:
     return result
 
 
+def _wire_base_color_to_diffuse(mat) -> bool:
+    """Point the Principled BSDF Base Color at the DiffuseSampler.
+
+    GTA weapon "palette" shaders wire Base Color to a palette/tint sampler
+    (e.g. W_PI_..._Dpal) whose texture ships in a shared game .ytd, not with the
+    weapon. Unshipped, it stays dataless and Sollumz renders it magenta over the
+    whole model. Reconnect Base Color to the real diffuse for a clean preview.
+    Props whose Base Color already comes from the diffuse are left untouched.
+    """
+    nt = getattr(mat, "node_tree", None)
+    if not nt:
+        return False
+    bsdf = next((n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"), None)
+    diffuse = next(
+        (n for n in nt.nodes if n.type == "TEX_IMAGE" and n.name == "DiffuseSampler"),
+        None,
+    )
+    if bsdf is None or diffuse is None or diffuse.image is None:
+        return False
+    base = bsdf.inputs.get("Base Color")
+    if base is None:
+        return False
+    if base.is_linked and base.links[0].from_node is diffuse:
+        return False
+    for link in list(base.links):
+        nt.links.remove(link)
+    nt.links.new(diffuse.outputs["Color"], base)
+    return True
+
+
+def _weapon_attach_bones(armature) -> dict:
+    """Map an upper-cased bone name to each of the weapon's `WAP*` attach bones
+    (WAPScop, WAPClip, WAPFlshLasr, WAPSupp, ...)."""
+    bones = {}
+    if armature and armature.type == "ARMATURE":
+        for b in armature.data.bones:
+            if b.name.upper().startswith("WAP"):
+                bones[b.name.upper()] = b
+    return bones
+
+
+def _attach_component(new_objs, weapon_arm, wap_bones) -> bool:
+    """Snap a freshly imported component to its matching weapon attach bone.
+
+    GTA weapon components carry a root bone named ``AAP<slot>`` (AAPScop,
+    AAPClip, AAPFlsh, ...) authored at the origin; the weapon skeleton has the
+    matching ``WAP<slot>`` bone at the real attach point. We move the component
+    so its origin lands on that bone's rest transform.
+    """
+    comp_arm = next((o for o in new_objs if o.type == "ARMATURE"), None)
+    slot = None
+    if comp_arm:
+        for b in comp_arm.data.bones:
+            up = b.name.upper()
+            if up.startswith("AAP") and len(up) > 3:
+                slot = up[3:]  # e.g. "SCOP", "CLIP", "FLSH", "SUPP"
+                break
+    if slot is None:
+        return False
+    target = wap_bones.get("WAP" + slot)
+    if target is None:
+        target = next(
+            (b for name, b in wap_bones.items() if name.startswith("WAP" + slot) or slot in name),
+            None,
+        )
+    if target is None:
+        return False
+    mat = weapon_arm.matrix_world @ target.matrix_local
+    for o in new_objs:
+        if o.parent is None:
+            o.matrix_world = mat @ o.matrix_world
+    return True
+
+
+def render_weapon(item, cam_obj, work_base) -> dict:
+    """Import a weapon plus its attachments into one scene, snapping each
+    attachment onto its matching weapon attach bone, and render a single still
+    framed on the combined bounding box."""
+    weapon_path = item["weapon_path"]
+    attachment_paths = item.get("attachment_paths", [])
+    output_path = item["output_path"]
+    result = {"output_path": output_path, "success": False, "error": None}
+    try:
+        _clear_meshes()
+        item_work = os.path.join(work_base, f"wpn_{id(item)}")
+        os.makedirs(item_work, exist_ok=True)
+
+        before = set(bpy.data.objects)
+        dest_weapon = prepare_object_work_dir(weapon_path, item_work)
+        if not import_drawable(dest_weapon):
+            result["error"] = "Weapon Sollumz import failed"
+            return result
+        weapon_objs = [o for o in bpy.data.objects if o not in before]
+        weapon_arm = next((o for o in weapon_objs if o.type == "ARMATURE"), None)
+        wap_bones = _weapon_attach_bones(weapon_arm)
+
+        # Attachments are optional extras: a failed one is skipped so the weapon
+        # still renders. Each is snapped onto its matching weapon attach bone.
+        for att in attachment_paths:
+            try:
+                before = set(bpy.data.objects)
+                dest_att = prepare_object_work_dir(att, item_work)
+                if not import_drawable(dest_att):
+                    print(f"Attachment import failed: {att}", file=sys.stderr)
+                    continue
+                new_objs = [o for o in bpy.data.objects if o not in before]
+                if weapon_arm and wap_bones and not _attach_component(new_objs, weapon_arm, wap_bones):
+                    print(f"No matching attach bone for {att}; left at origin.", file=sys.stderr)
+            except Exception as exc:
+                print(f"Attachment error {att}: {exc}", file=sys.stderr)
+
+        if get_mesh_bounding_box() is None:
+            result["error"] = "No mesh geometry imported"
+            return result
+
+        dds_files = item.get("dds_files", [])
+        if dds_files:
+            fix_missing_textures(dds_files, use_default=False)
+        # Weapon shaders often drive Base Color from a palette sampler whose
+        # texture is not shipped with the weapon; repoint it at the diffuse.
+        for mat in bpy.data.materials:
+            _wire_base_color_to_diffuse(mat)
+        fix_alpha_modes()
+        ensure_lighting("object")
+
+        frame_camera_object(cam_obj, OBJECT_AZIMUTH_DEG, OBJECT_ELEVATION_DEG)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        bpy.context.scene.render.filepath = output_path
+        bpy.ops.render.render(write_still=True)
+        if os.path.isfile(output_path):
+            result["success"] = True
+        else:
+            result["error"] = "Render produced no output file"
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        traceback.print_exc(file=sys.stderr)
+    return result
+
+
 def _apply_config(config: dict) -> None:
     global RENDER_SIZE, TAA_SAMPLES, OBJECT_AZIMUTH_DEG, OBJECT_ELEVATION_DEG
     global STILL_FORMAT
@@ -667,8 +806,11 @@ def worker_main() -> None:
                  "error": f"JSON decode error: {exc}"}), flush=True)
             continue
 
-        if item.get("type") == "object":
+        item_type = item.get("type")
+        if item_type == "object":
             result = render_object(item, cam_obj, work_base)
+        elif item_type == "weapon":
+            result = render_weapon(item, cam_obj, work_base)
         else:
             result = render_item(item, cam_obj, work_base)
 

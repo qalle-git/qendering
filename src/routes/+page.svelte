@@ -8,7 +8,7 @@
 
   let inputDir = $state("");
   let outputDir = $state("");
-  let mode = $state<"clothing" | "objects">("clothing");
+  let mode = $state<"clothing" | "objects" | "weapons">("clothing");
   let format = $state<"webp" | "png" | "jpg">("webp");
 
   // Object camera / animation controls.
@@ -23,6 +23,13 @@
   let clothing3d = $state(false);
   // Skip a Blender item that hangs longer than this (seconds).
   let timeoutSecs = $state(30);
+
+  // Weapons mode: one weapon + chosen attachment models, rendered as one still.
+  let weaponPath = $state("");
+  let weaponAttachments = $state<string[]>([]); // candidate attachment paths
+  let selectedAttachments = $state<string[]>([]); // chosen attachment paths
+  let weaponBuilding = $state(false);
+  let weaponError = $state("");
 
   let scan = $state<ScanResult | null>(null);
   let scanning = $state(false);
@@ -54,7 +61,9 @@
   );
 
   const canScan = $derived(!!inputDir && !scanning && !running);
-  const canRender = $derived(!!inputDir && !!outputDir && !running);
+  const canRender = $derived(
+    !!outputDir && !running && (mode === "weapons" ? !!weaponPath : !!inputDir),
+  );
   const pct = $derived(total > 0 ? Math.round((current / total) * 100) : 0);
 
   function addLog(msg: string) {
@@ -74,6 +83,72 @@
         currentOutputDir = dir;
         await refreshOutputs();
       }
+    }
+  }
+
+  function baseName(p: string): string {
+    return p.split(/[\\/]/).pop() ?? p;
+  }
+
+  async function pickWeapon() {
+    const sel = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "Weapon", extensions: ["ydr", "yft"] }],
+    });
+    if (typeof sel === "string") {
+      weaponPath = sel;
+      previewSrc = "";
+      weaponError = "";
+      selectedAttachments = [];
+      try {
+        weaponAttachments = await invoke<string[]>("list_weapon_attachments", {
+          weaponPath: sel,
+        });
+      } catch (e) {
+        weaponError = `Could not list attachments: ${e}`;
+        weaponAttachments = [];
+      }
+    }
+  }
+
+  function toggleAttachment(p: string) {
+    selectedAttachments = selectedAttachments.includes(p)
+      ? selectedAttachments.filter((x) => x !== p)
+      : [...selectedAttachments, p];
+  }
+
+  async function buildWeapon() {
+    if (!weaponPath) {
+      weaponError = "Pick a weapon file first.";
+      return;
+    }
+    if (!outputDir) {
+      weaponError = "Pick an output folder first.";
+      return;
+    }
+    weaponError = "";
+    weaponBuilding = true;
+    previewSrc = "";
+    addLog(`Rendering weapon ${baseName(weaponPath)}…`);
+    try {
+      const imgPath = await invoke<string>("render_weapon", {
+        weaponPath,
+        attachmentPaths: selectedAttachments,
+        format,
+        azimuthDeg: azimuth,
+        elevationDeg: elevation,
+        outputDir,
+        timeoutSecs: Math.max(10, Math.round(timeoutSecs) || 30),
+      });
+      previewSrc = await invoke<string>("read_image_data_url", { path: imgPath });
+      currentOutputDir = outputDir;
+      await refreshOutputs();
+    } catch (e) {
+      weaponError = String(e);
+      addLog(`Weapon render failed: ${e}`);
+    } finally {
+      weaponBuilding = false;
     }
   }
 
@@ -113,6 +188,10 @@
   }
 
   async function doRender() {
+    if (mode === "weapons") {
+      await buildWeapon();
+      return;
+    }
     if (!canRender) return;
     const subfolder = computeSubfolder();
     currentOutputDir = subfolder ? `${outputDir}/${subfolder}` : outputDir;
@@ -401,6 +480,9 @@
           <button class:active={mode === "objects"} onclick={() => (mode = "objects")}>
             Objects
           </button>
+          <button class:active={mode === "weapons"} onclick={() => (mode = "weapons")}>
+            Weapons
+          </button>
         </div>
       </section>
 
@@ -440,7 +522,37 @@
         {/if}
       </section>
 
-      {#if mode === "objects" || (mode === "clothing" && clothing3d)}
+      {#if mode === "weapons"}
+        <section class="group">
+          <label class="lbl">Weapon</label>
+          <button class="btn ghost" onclick={pickWeapon}>
+            {weaponPath ? baseName(weaponPath) : "Pick weapon (.ydr / .yft)"}
+          </button>
+          {#if weaponAttachments.length}
+            <label class="lbl" style="margin-top:10px;">Attachments</label>
+            <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;">
+              {#each weaponAttachments as att}
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={selectedAttachments.includes(att)}
+                    onchange={() => toggleAttachment(att)}
+                  />
+                  <span>{baseName(att)}</span>
+                </label>
+              {/each}
+            </div>
+          {:else if weaponPath}
+            <div class="hint">No sibling .ydr/.yft attachments found in that folder.</div>
+          {/if}
+          <div class="hint">Set an output folder, then click <b>Render</b> to preview.</div>
+          {#if weaponError}
+            <div class="hint" style="color:#ff6b6b;">{weaponError}</div>
+          {/if}
+        </section>
+      {/if}
+
+      {#if mode === "objects" || (mode === "clothing" && clothing3d) || mode === "weapons"}
         <section class="group">
           <label class="lbl">Camera angle</label>
           <div class="slider">
@@ -533,7 +645,9 @@
             {stopping ? "Stopping…" : "Stop"}
           </button>
         {:else}
-          <button class="btn primary" disabled={!canRender} onclick={doRender}>Render</button>
+          <button class="btn primary" disabled={!canRender || weaponBuilding} onclick={doRender}>
+            {weaponBuilding ? "Rendering…" : "Render"}
+          </button>
         {/if}
       </div>
 
@@ -559,7 +673,7 @@
           <img src={previewSrc} alt="render preview" />
         {:else}
           <div class="placeholder">
-            {running ? "Rendering…" : "Preview of the current render appears here"}
+            {running || weaponBuilding ? "Rendering…" : "Preview of the current render appears here"}
           </div>
         {/if}
       </div>

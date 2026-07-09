@@ -1044,6 +1044,125 @@ fn preview_turntable(
     Ok(rr.frames)
 }
 
+/// List candidate attachment models (`.ydr` / `.yft`) that sit next to the
+/// selected weapon file, excluding the weapon itself, sorted by name.
+#[tauri::command]
+fn list_weapon_attachments(weapon_path: String) -> Vec<String> {
+    let weapon = Path::new(&weapon_path);
+    let Some(dir) = weapon.parent() else {
+        return Vec::new();
+    };
+    let weapon_name = weapon.file_name().map(|n| n.to_os_string());
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() {
+                continue;
+            }
+            if Some(e.file_name()) == weapon_name {
+                continue;
+            }
+            let is_model = p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("ydr") || s.eq_ignore_ascii_case("yft"))
+                .unwrap_or(false);
+            if is_model {
+                out.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Render one weapon assembled with the chosen attachments as a single still.
+/// Returns the rendered image path.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn render_weapon(
+    app: AppHandle,
+    weapon_path: String,
+    attachment_paths: Vec<String>,
+    format: String,
+    azimuth_deg: f64,
+    elevation_deg: f64,
+    output_dir: String,
+    timeout_secs: u64,
+) -> Result<String, String> {
+    let weapon = Path::new(&weapon_path);
+    if !weapon.is_file() {
+        return Err("Pick a weapon file (.ydr or .yft).".into());
+    }
+    let blender = qendering_render::find_blender()
+        .ok_or_else(|| "Blender not found. Install Blender 4.2+ or 5.x with Sollumz.".to_string())?;
+    let script = resolve_render_script(&app)
+        .ok_or_else(|| "Could not locate blender_render.py.".to_string())?;
+
+    // Textures: extract the weapon folder's .ytd(s) to DDS (as for objects).
+    let dds_files = match weapon.parent() {
+        Some(dir) => extract_pack_dds(&app, dir),
+        None => Vec::new(),
+    };
+
+    let fmt = OutputFormat::parse(&format).unwrap_or(OutputFormat::Webp);
+    let tex_dir = Path::new(&output_dir).join("textures");
+    std::fs::create_dir_all(&tex_dir).map_err(|e| e.to_string())?;
+    let stem = weapon
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("weapon")
+        .replace('^', "_");
+    let file = format!("{stem}.{}", fmt.ext());
+    let out_path = tex_dir.join(&file);
+
+    let config = RenderConfig {
+        azimuth: Some(azimuth_deg),
+        elevation: Some(elevation_deg),
+        still_format: Some(fmt.blender_format().to_string()),
+        ..Default::default()
+    };
+    let item = RenderItem::weapon(
+        weapon_path.clone(),
+        attachment_paths,
+        dds_files,
+        out_path.to_string_lossy().to_string(),
+    );
+
+    let results = qendering_render::render(
+        &blender,
+        &script,
+        vec![item],
+        1,
+        config,
+        Duration::from_secs(timeout_secs.max(10)),
+        |_, _, _| {},
+        Arc::new(AtomicBool::new(false)),
+    );
+    let rr = results
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Blender produced no result.".to_string())?;
+    if !rr.success {
+        return Err(rr.error.unwrap_or_else(|| "Weapon render failed.".to_string()));
+    }
+
+    let manifest = Manifest {
+        mode: "weapon".to_string(),
+        format: fmt.ext().to_string(),
+        count: 1,
+        props: vec![PropEntry {
+            name: stem,
+            file,
+            source: None,
+        }],
+    };
+    write_manifest(&app, &Path::new(&output_dir).join("manifest.json"), &manifest);
+
+    Ok(rr.output_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Sweep any temp dirs left behind by a previous crash before we start.
@@ -1059,8 +1178,33 @@ pub fn run() {
             cancel_render,
             read_image_data_url,
             list_outputs,
-            preview_turntable
+            preview_turntable,
+            list_weapon_attachments,
+            render_weapon
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod weapon_tests {
+    use super::*;
+
+    #[test]
+    fn list_weapon_attachments_excludes_weapon_and_non_models() {
+        let base = std::env::temp_dir().join(format!("qendering_wpn_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        for name in ["w_ar_rifle.ydr", "scope.ydr", "supp.yft", "readme.txt", "rifle.ytd"] {
+            std::fs::write(base.join(name), b"x").unwrap();
+        }
+        let weapon = base.join("w_ar_rifle.ydr");
+        let found = list_weapon_attachments(weapon.to_string_lossy().to_string());
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| Path::new(p).file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["scope.ydr", "supp.yft"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

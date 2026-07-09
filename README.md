@@ -23,13 +23,17 @@ if the player does not load.
 
 ## Features
 
-- **Two render modes**
+- **Three render modes**
   - *Clothing*: a fast, pure-Rust pipeline that pulls the diffuse texture
     straight from each `.ytd` (RSC7 -> YTD -> DDS -> decode -> image). No
     Blender needed. An optional **3D render** toggle instead imports each paired
     `.ydd` drawable in Blender for a true 3D preview.
   - *Objects*: 3/4 product shots of standalone `.ydr` world objects rendered in
     Blender via Sollumz, with external `.ytd` pack textures auto-applied.
+  - *Weapons*: pick a weapon (`.ydr`/`.yft`), tick the attachment models sitting
+    beside it (scope, suppressor, flashlight, mag), and render one assembled
+    still. Attachments snap onto the weapon's `WAP*` skeleton bones, so they land
+    in the right place instead of piling at the origin.
 - **Output formats**: WebP, PNG, or JPEG. Transparent backgrounds for WebP/PNG;
   JPEG is flattened onto white.
 - **Camera controls**: azimuth (0-360 degrees) and elevation (0-60 degrees)
@@ -54,6 +58,13 @@ if the player does not load.
 - **Clean output**: source basenames with `^` rewritten to `_`, automatic
   de-duplication of repeated names, square padded canvas, glass forced opaque,
   and scale-invariant lighting so props of any size light consistently.
+
+### Weapons mode
+
+Pick a weapon and tick the attachment models that sit beside it; each snaps onto
+its matching skeleton bone before the shot is rendered.
+
+<img src="docs/weapons.png" alt="Weapons mode: a weapon with its attachment checklist" width="280">
 
 ## Output layout
 

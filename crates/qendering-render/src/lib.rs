@@ -50,6 +50,18 @@ pub enum RenderItem {
         #[serde(skip_serializing_if = "Option::is_none")]
         frames: Option<u32>,
     },
+    #[serde(rename = "weapon")]
+    Weapon {
+        weapon_path: String,
+        /// Attachment drawables imported at their authored positions alongside
+        /// the weapon (scope, suppressor, grip, extended mag, ...).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        attachment_paths: Vec<String>,
+        /// External `.ytd` textures pre-extracted to DDS (as for objects).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        dds_files: Vec<String>,
+        output_path: String,
+    },
 }
 
 impl RenderItem {
@@ -92,6 +104,22 @@ impl RenderItem {
         }
     }
 
+    /// Build a weapon item: import `weapon_path` plus every attachment at its
+    /// authored position, apply `dds_files`, and render a single still.
+    pub fn weapon(
+        weapon_path: impl Into<String>,
+        attachment_paths: Vec<String>,
+        dds_files: Vec<String>,
+        output_path: impl Into<String>,
+    ) -> Self {
+        RenderItem::Weapon {
+            weapon_path: weapon_path.into(),
+            attachment_paths,
+            dds_files,
+            output_path: output_path.into(),
+        }
+    }
+
     /// Request a spinning render of `n` frames (objects only); the worker
     /// returns the frame image paths for GIF assembly.
     pub fn with_frames(mut self, n: u32) -> Self {
@@ -104,9 +132,9 @@ impl RenderItem {
     /// The image path this item renders to.
     pub fn output_path(&self) -> &str {
         match self {
-            RenderItem::Clothing { output_path, .. } | RenderItem::Object { output_path, .. } => {
-                output_path
-            }
+            RenderItem::Clothing { output_path, .. }
+            | RenderItem::Object { output_path, .. }
+            | RenderItem::Weapon { output_path, .. } => output_path,
         }
     }
 
@@ -623,6 +651,23 @@ mod tests {
                 "D:\\SteamLibrary".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn weapon_item_json_shape() {
+        let item = RenderItem::weapon(
+            "C:/w/rifle.ydr",
+            vec!["C:/w/scope.ydr".to_string(), "C:/w/supp.ydr".to_string()],
+            vec!["C:/dds/tex.dds".to_string()],
+            "C:/out/rifle.webp",
+        );
+        let v: serde_json::Value = serde_json::from_str(&item.to_line()).unwrap();
+        assert_eq!(v["type"], "weapon");
+        assert_eq!(v["weapon_path"], "C:/w/rifle.ydr");
+        assert_eq!(v["attachment_paths"][1], "C:/w/supp.ydr");
+        assert_eq!(v["dds_files"][0], "C:/dds/tex.dds");
+        assert_eq!(v["output_path"], "C:/out/rifle.webp");
+        assert_eq!(item.output_path(), "C:/out/rifle.webp");
     }
 
     #[test]
