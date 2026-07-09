@@ -1,6 +1,6 @@
 {
   "name": "qendering",
-  "version": "0.16.0",
+  "version": "0.16.1",
   "description": "GTA V clothing & object preview renderer",
   "type": "module",
   "scripts": {

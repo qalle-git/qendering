@@ -9,9 +9,10 @@ Sollumz**. One file to start, no Python environment to manage.
 
 ## Status
 
-Stable and feature-complete. Windows installers are published on every release;
-see the [Releases](https://github.com/qalle-git/qendering/releases) page for the
-latest `.exe` / `.msi`.
+Stable and feature-complete. A signed Windows installer (`.exe`) is published on
+every release; see the [Releases](https://github.com/qalle-git/qendering/releases)
+page for the latest one. After the first install the app **updates itself** — it
+checks GitHub on launch and offers to install new versions in place.
 
 ## Demo
 
