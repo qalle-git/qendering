@@ -440,251 +440,291 @@
       window.removeEventListener("keydown", onKey);
     };
   });
+
+  const modeBlurb = $derived(
+    mode === "clothing"
+      ? "Preview clothing textures pulled straight from each .ytd."
+      : mode === "objects"
+        ? "3/4 product shots of standalone .ydr world objects."
+        : "Assemble a weapon with its attachments as one shot.",
+  );
 </script>
 
 <div class="app">
   <header class="topbar">
     <div class="brand">
       <span class="logo">Q</span>
-      <div>
+      <div class="brandtext">
         <div class="title">Qendering</div>
-        <div class="subtitle">GTA V clothing &amp; object preview renderer</div>
+        <div class="subtitle">GTA V asset preview renderer</div>
       </div>
+    </div>
+    <div class="status" class:busy={running || weaponBuilding}>
+      <span class="dot"></span>
+      {running || weaponBuilding ? "Rendering" : "Ready"}
     </div>
   </header>
 
   <div class="body">
     <aside class="panel">
-      <section class="group">
-        <label class="lbl">Input folder</label>
-        <div class="pathrow">
-          <span class="path" title={inputDir}>{inputDir || "Not selected"}</span>
-          <button class="btn ghost" onclick={() => pick("in")}>Browse</button>
-        </div>
-      </section>
-
-      <section class="group">
-        <label class="lbl">Output folder</label>
-        <div class="pathrow">
-          <span class="path" title={outputDir}>{outputDir || "Not selected"}</span>
-          <button class="btn ghost" onclick={() => pick("out")}>Browse</button>
-        </div>
-      </section>
-
-      <section class="group">
-        <label class="lbl">Asset type</label>
-        <div class="segmented">
-          <button class:active={mode === "clothing"} onclick={() => (mode = "clothing")}>
-            Clothing
-          </button>
-          <button class:active={mode === "objects"} onclick={() => (mode = "objects")}>
-            Objects
-          </button>
-          <button class:active={mode === "weapons"} onclick={() => (mode = "weapons")}>
-            Weapons
-          </button>
-        </div>
-      </section>
-
-      <section class="group">
-        <label class="lbl">Output format</label>
-        <select class="select" bind:value={format} disabled={mode === "objects" && animate}>
-          <option value="webp">WebP</option>
-          <option value="png">PNG</option>
-          <option value="jpg">JPEG</option>
-        </select>
-      </section>
-
-      {#if mode === "clothing"}
+      <div class="scroll">
+        <!-- Step 1: folders -->
         <section class="group">
-          <label class="check">
-            <input type="checkbox" bind:checked={clothing3d} />
-            <span>3D render (Blender)</span>
-          </label>
-          <div class="hint">
-            {clothing3d
-              ? "Imports each .ydd drawable in Blender for a 3D preview (slower; needs Blender + Sollumz)."
-              : "Fast flat texture extraction straight from the .ytd (no Blender)."}
+          <h2 class="steplabel"><span class="stepnum">1</span> Folders</h2>
+          <div class="field">
+            <span class="fieldlabel">Input</span>
+            <button class="pathbtn" onclick={() => pick("in")} title={inputDir}>
+              <span class="path" class:empty={!inputDir}>
+                {inputDir ? baseName(inputDir) : "Choose input folder"}
+              </span>
+              <span class="pathaction">Browse</span>
+            </button>
+          </div>
+          <div class="field">
+            <span class="fieldlabel">Output</span>
+            <button class="pathbtn" onclick={() => pick("out")} title={outputDir}>
+              <span class="path" class:empty={!outputDir}>
+                {outputDir ? baseName(outputDir) : "Choose output folder"}
+              </span>
+              <span class="pathaction">Browse</span>
+            </button>
           </div>
         </section>
-      {/if}
 
-      <section class="group">
-        <label class="check">
-          <input type="checkbox" bind:checked={useSubfolder} />
-          <span>Save into a dated subfolder</span>
-        </label>
-        {#if useSubfolder}
-          <input class="textin" type="text" placeholder="Label (optional)" bind:value={label} />
-          <div class="hint">
-            Folder like <b>2026-06-22_19-30-05{label.trim() ? "_" + sanitizeLabel(label) : ""}</b>/
+        <!-- Step 2: asset type -->
+        <section class="group">
+          <h2 class="steplabel"><span class="stepnum">2</span> Asset type</h2>
+          <div class="segmented">
+            <button class:active={mode === "clothing"} onclick={() => (mode = "clothing")}>
+              Clothing
+            </button>
+            <button class:active={mode === "objects"} onclick={() => (mode = "objects")}>
+              Objects
+            </button>
+            <button class:active={mode === "weapons"} onclick={() => (mode = "weapons")}>
+              Weapons
+            </button>
           </div>
+          <p class="hint">{modeBlurb}</p>
+        </section>
+
+        <!-- Step 3 (weapons): weapon + attachments -->
+        {#if mode === "weapons"}
+          <section class="group">
+            <h2 class="steplabel"><span class="stepnum">3</span> Weapon &amp; attachments</h2>
+            <button class="pathbtn" onclick={pickWeapon} title={weaponPath}>
+              <span class="path" class:empty={!weaponPath}>
+                {weaponPath ? baseName(weaponPath) : "Pick weapon (.ydr / .yft)"}
+              </span>
+              <span class="pathaction">Browse</span>
+            </button>
+            {#if weaponAttachments.length}
+              <div class="attlist">
+                {#each weaponAttachments as att}
+                  <label class="check">
+                    <input
+                      type="checkbox"
+                      checked={selectedAttachments.includes(att)}
+                      onchange={() => toggleAttachment(att)}
+                    />
+                    <span>{baseName(att)}</span>
+                  </label>
+                {/each}
+              </div>
+            {:else if weaponPath}
+              <p class="hint">No .ydr/.yft attachments sit beside that weapon.</p>
+            {/if}
+            {#if weaponError}<p class="hint err">{weaponError}</p>{/if}
+          </section>
         {/if}
-      </section>
 
-      {#if mode === "weapons"}
+        <!-- Options -->
         <section class="group">
-          <label class="lbl">Weapon</label>
-          <button class="btn ghost" onclick={pickWeapon}>
-            {weaponPath ? baseName(weaponPath) : "Pick weapon (.ydr / .yft)"}
-          </button>
-          {#if weaponAttachments.length}
-            <label class="lbl" style="margin-top:10px;">Attachments</label>
-            <div style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;">
-              {#each weaponAttachments as att}
-                <label class="check">
-                  <input
-                    type="checkbox"
-                    checked={selectedAttachments.includes(att)}
-                    onchange={() => toggleAttachment(att)}
-                  />
-                  <span>{baseName(att)}</span>
-                </label>
-              {/each}
-            </div>
-          {:else if weaponPath}
-            <div class="hint">No sibling .ydr/.yft attachments found in that folder.</div>
-          {/if}
-          <div class="hint">Set an output folder, then click <b>Render</b> to preview.</div>
-          {#if weaponError}
-            <div class="hint" style="color:#ff6b6b;">{weaponError}</div>
-          {/if}
-        </section>
-      {/if}
+          <h2 class="steplabel">
+            <span class="stepnum">{mode === "weapons" ? 4 : 3}</span> Options
+          </h2>
 
-      {#if mode === "objects" || (mode === "clothing" && clothing3d) || mode === "weapons"}
-        <section class="group">
-          <label class="lbl">Camera angle</label>
-          <div class="slider">
-            <div class="sliderhead"><span>Azimuth</span><b>{azimuth}°</b></div>
-            <input type="range" min="0" max="360" step="1" bind:value={azimuth} />
+          <div class="field">
+            <span class="fieldlabel">Format</span>
+            <select class="select" bind:value={format} disabled={mode === "objects" && animate}>
+              <option value="webp">WebP</option>
+              <option value="png">PNG</option>
+              <option value="jpg">JPEG</option>
+            </select>
+            {#if mode === "objects" && animate}
+              <p class="hint">Animated runs are saved as .gif.</p>
+            {/if}
           </div>
-          <div class="slider">
-            <div class="sliderhead"><span>Elevation</span><b>{elevation}°</b></div>
-            <input
-              type="range"
-              min="0"
-              max="60"
-              step="1"
-              bind:value={elevation}
-              onchange={() => {
-                if (turntableFrames.length) buildTurntable();
-              }}
-            />
-          </div>
+
           {#if mode === "clothing"}
-            <div class="hint">Azimuth <b>0°</b> faces the piece head-on; raise it for a 3/4 view.</div>
+            <label class="check">
+              <input type="checkbox" bind:checked={clothing3d} />
+              <span>3D render in Blender</span>
+            </label>
+            <p class="hint">
+              {clothing3d
+                ? "Imports each .ydd drawable for a true 3D preview (needs Blender + Sollumz)."
+                : "Fast flat texture extraction from the .ytd — no Blender needed."}
+            </p>
           {/if}
-          <div class="slider">
-            <div class="sliderhead"><span>Skip item after</span><b>{timeoutSecs}s</b></div>
-            <input type="range" min="5" max="120" step="5" bind:value={timeoutSecs} />
-          </div>
-          <div class="hint">A Blender render that hangs longer than this is skipped and marked failed.</div>
-        </section>
-      {/if}
 
-      {#if mode === "objects"}
-        <section class="group">
-          <div class="slider">
-            <div class="sliderhead"><span>Preview frames</span><b>{previewFrames}</b></div>
-            <input
-              type="range"
-              min="8"
-              max="64"
-              step="4"
-              bind:value={previewFrames}
-              onchange={() => {
-                if (turntableFrames.length) buildTurntable();
-              }}
-            />
-          </div>
-          <button
-            class="btn ghost"
-            disabled={!inputDir || previewBuilding}
-            onclick={buildTurntable}
-          >
-            {previewBuilding
-              ? "Rendering preview…"
-              : turntableFrames.length
-                ? "Rebuild live preview"
-                : "Live preview (rotate)"}
-          </button>
-          {#if previewBuilding}
-            <div class="hint">Rendering the first object's turntable…</div>
-          {:else if turntableFrames.length}
-            <div class="hint">Drag <b>Azimuth</b> to rotate · {turntableFrames.length} frames.</div>
-          {:else if previewMsg}
-            <div class="hint">{previewMsg}</div>
-          {/if}
-          <label class="check">
-            <input type="checkbox" bind:checked={animate} />
-            <span>Animate — 2s spinning GIF</span>
-          </label>
-          {#if animate}
-            <div class="hint">Outputs are saved as <b>.gif</b> (azimuth is swept 360°).</div>
-          {/if}
-          <label class="check">
-            <input type="checkbox" bind:checked={batch} />
-            <span>Per-pack batch</span>
-          </label>
-          {#if batch}
-            <div class="hint">
-              Each top-level pack folder renders in its own worker pool and gets its own
-              subfolder + <b>manifest.json</b>. A crash in one pack won't stop the others.
+          {#if mode === "objects" || (mode === "clothing" && clothing3d) || mode === "weapons"}
+            <div class="field">
+              <span class="fieldlabel">Camera angle</span>
+              <div class="slider">
+                <div class="sliderhead"><span>Azimuth</span><b>{azimuth}°</b></div>
+                <input type="range" min="0" max="360" step="1" bind:value={azimuth} />
+              </div>
+              <div class="slider">
+                <div class="sliderhead"><span>Elevation</span><b>{elevation}°</b></div>
+                <input
+                  type="range"
+                  min="0"
+                  max="60"
+                  step="1"
+                  bind:value={elevation}
+                  onchange={() => {
+                    if (turntableFrames.length) buildTurntable();
+                  }}
+                />
+              </div>
+              {#if mode === "clothing"}
+                <p class="hint">Azimuth 0° faces the piece head-on; raise it for a 3/4 view.</p>
+              {/if}
             </div>
           {/if}
-        </section>
-      {/if}
 
+          {#if mode === "objects"}
+            <button
+              class="btn ghost full"
+              disabled={!inputDir || previewBuilding}
+              onclick={buildTurntable}
+            >
+              {previewBuilding
+                ? "Rendering preview…"
+                : turntableFrames.length
+                  ? "Rebuild live preview"
+                  : "Live rotate preview"}
+            </button>
+            {#if turntableFrames.length && !previewBuilding}
+              <p class="hint">Drag azimuth to rotate · {turntableFrames.length} frames.</p>
+            {:else if previewMsg}
+              <p class="hint">{previewMsg}</p>
+            {/if}
+          {/if}
+        </section>
+
+        <!-- Advanced (collapsed by default) -->
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <div class="advbody">
+            <div class="slider">
+              <div class="sliderhead"><span>Skip item after</span><b>{timeoutSecs}s</b></div>
+              <input type="range" min="5" max="120" step="5" bind:value={timeoutSecs} />
+            </div>
+            <p class="hint">A Blender render that hangs longer than this is skipped.</p>
+
+            <label class="check">
+              <input type="checkbox" bind:checked={useSubfolder} />
+              <span>Save into a dated subfolder</span>
+            </label>
+            {#if useSubfolder}
+              <input class="textin" type="text" placeholder="Label (optional)" bind:value={label} />
+              <p class="hint">
+                Folder: 2026-06-22_19-30-05{label.trim() ? "_" + sanitizeLabel(label) : ""}/
+              </p>
+            {/if}
+
+            {#if mode === "objects"}
+              <div class="slider">
+                <div class="sliderhead"><span>Preview frames</span><b>{previewFrames}</b></div>
+                <input
+                  type="range"
+                  min="8"
+                  max="64"
+                  step="4"
+                  bind:value={previewFrames}
+                  onchange={() => {
+                    if (turntableFrames.length) buildTurntable();
+                  }}
+                />
+              </div>
+              <label class="check">
+                <input type="checkbox" bind:checked={animate} />
+                <span>Animate — 2s spinning GIF</span>
+              </label>
+              <label class="check">
+                <input type="checkbox" bind:checked={batch} />
+                <span>Per-pack batch</span>
+              </label>
+              {#if batch}
+                <p class="hint">
+                  Each pack renders in its own worker pool with its own manifest, so one bad pack
+                  cannot stop the rest.
+                </p>
+              {/if}
+            {/if}
+          </div>
+        </details>
+
+        {#if scan}
+          <section class="scancard">
+            <div class="scanrow"><span>Clothing</span><b>{scan.clothing_total}</b></div>
+            <div class="scanrow"><span>Objects</span><b>{scan.objects}</b></div>
+            <div class="scanrow"><span>Collections</span><b>{scan.dlcs.length}</b></div>
+            {#if scan.dlcs.length}
+              <div class="dlcs">
+                {#each scan.dlcs as d}
+                  <div class="dlc"><span title={d.name}>{d.name}</span><em>{d.items}</em></div>
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
+      </div>
+
+      <!-- Sticky actions -->
       <div class="actions">
-        <button class="btn" disabled={!canScan} onclick={doScan}>
+        <button class="btn secondary" disabled={!canScan} onclick={doScan}>
           {scanning ? "Scanning…" : "Scan"}
         </button>
         {#if running}
-          <button class="btn stop" disabled={stopping} onclick={stopRender}>
+          <button class="btn stop grow" disabled={stopping} onclick={stopRender}>
             {stopping ? "Stopping…" : "Stop"}
           </button>
         {:else}
-          <button class="btn primary" disabled={!canRender || weaponBuilding} onclick={doRender}>
+          <button class="btn primary grow" disabled={!canRender || weaponBuilding} onclick={doRender}>
             {weaponBuilding ? "Rendering…" : "Render"}
           </button>
         {/if}
       </div>
-
-      {#if scan}
-        <section class="scancard">
-          <div class="scanrow"><span>Clothing</span><b>{scan.clothing_total}</b></div>
-          <div class="scanrow"><span>Objects</span><b>{scan.objects}</b></div>
-          <div class="scanrow"><span>Collections</span><b>{scan.dlcs.length}</b></div>
-          {#if scan.dlcs.length}
-            <div class="dlcs">
-              {#each scan.dlcs as d}
-                <div class="dlc"><span title={d.name}>{d.name}</span><em>{d.items}</em></div>
-              {/each}
-            </div>
-          {/if}
-        </section>
-      {/if}
     </aside>
 
     <main class="stage">
       <div class="preview">
         {#if previewSrc}
-          <img src={previewSrc} alt="render preview" />
+          <img src={previewSrc} alt="Render preview" />
         {:else}
           <div class="placeholder">
-            {running || weaponBuilding ? "Rendering…" : "Preview of the current render appears here"}
+            <div class="ph-icon" aria-hidden="true">⬚</div>
+            <div class="ph-title">{running || weaponBuilding ? "Rendering…" : "No preview yet"}</div>
+            <div class="ph-sub">
+              {running || weaponBuilding
+                ? "Your render will appear here."
+                : "Pick folders and hit Render to see a preview."}
+            </div>
           </div>
         {/if}
       </div>
 
-      <div class="progress">
+      <div class="progress" class:on={running || total > 0}>
         <div class="bar"><div class="fill" style="width:{pct}%"></div></div>
         <div class="meta">
-          <span class="file" title={lastFile}>{lastFile || "—"}</span>
+          <span class="file" title={lastFile}>{lastFile || "Idle"}</span>
           <span class="count">
-            {current}/{total}
-            {#if processed || failed}· {processed} ok · {failed} failed{/if}
+            {#if total > 0}<span class="frac">{current}/{total}</span>{/if}
+            {#if processed}<span class="ok">{processed} ok</span>{/if}
+            {#if failed}<span class="fail">{failed} failed</span>{/if}
           </span>
         </div>
       </div>
@@ -704,16 +744,14 @@
               bind:value={filter}
               oninput={() => (selectedIndex = -1)}
             />
-            {#if outputs.length}
-              <button
-                class="btn ghost"
-                onclick={clearGallery}
-                title="Clear the gallery view (does not delete files)"
-              >
-                Clear
-              </button>
-            {/if}
-            <span class="hint">← → cycle</span>
+            <button
+              class="btn ghost sm"
+              onclick={clearGallery}
+              title="Clear the gallery view (does not delete files)"
+            >
+              Clear
+            </button>
+            <span class="hint kbd">← → cycle</span>
           </div>
           {#if filteredOutputs.length}
             <div class="thumbs">
@@ -742,14 +780,17 @@
         </section>
       {/if}
 
-      <div class="log">
-        {#each log as line}
-          <div class="logline">{line}</div>
-        {/each}
-        {#if !log.length}
-          <div class="logline muted">Logs will appear here.</div>
-        {/if}
-      </div>
+      <details class="logwrap" open>
+        <summary>Activity{#if log.length} · {log.length}{/if}</summary>
+        <div class="log">
+          {#each log as line}
+            <div class="logline">{line}</div>
+          {/each}
+          {#if !log.length}
+            <div class="logline muted">Activity will appear here.</div>
+          {/if}
+        </div>
+      </details>
     </main>
   </div>
 </div>
@@ -760,163 +801,292 @@
     height: 100%;
   }
   :global(body) {
-    font-family: "Segoe UI", Inter, system-ui, sans-serif;
-    background: #0e0f13;
-    color: #e6e8ee;
+    font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+    background: #0d0e12;
+    color: #e7e9f0;
     -webkit-font-smoothing: antialiased;
   }
 
   .app {
-    --bg: #0e0f13;
-    --panel: #16181f;
-    --panel2: #1c1f28;
-    --border: #262a36;
-    --muted: #8b90a0;
-    --text: #e6e8ee;
-    --accent: #6d5efc;
-    --accent2: #8b7bff;
+    --bg: #0d0e12;
+    --panel: #14151b;
+    --elev: #1a1c24;
+    --elev2: #21232d;
+    --border: #272a34;
+    --border-soft: #1e2029;
+    --text: #e7e9f0;
+    --text-dim: #b3b8c6;
+    --muted: #767c8c;
+    --accent: #4c7ef3;
+    --accent-press: #3f6ede;
+    --accent-soft: rgba(76, 126, 243, 0.16);
+    --danger: #e5544b;
+    --ok: #4ec98a;
+    --r: 10px;
+    --r-sm: 7px;
+    --s1: 4px;
+    --s2: 8px;
+    --s3: 12px;
+    --s4: 16px;
+    --s5: 24px;
+
     height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
 
+  button {
+    font-family: inherit;
+  }
+
+  /* Focus rings, consistent everywhere. */
+  :where(button, input, select, summary, .pathbtn):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* --- Top bar --- */
   .topbar {
     display: flex;
     align-items: center;
-    padding: 14px 18px;
+    justify-content: space-between;
+    padding: var(--s3) var(--s4);
     border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, #15171e, #111319);
+    background: var(--panel);
   }
   .brand {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: var(--s3);
   }
   .logo {
-    width: 34px;
-    height: 34px;
+    width: 32px;
+    height: 32px;
     display: grid;
     place-items: center;
-    border-radius: 9px;
-    font-weight: 800;
-    color: white;
-    background: linear-gradient(135deg, var(--accent), var(--accent2));
-    box-shadow: 0 4px 14px rgba(109, 94, 252, 0.4);
+    border-radius: var(--r-sm);
+    font-weight: 700;
+    font-size: 17px;
+    color: #fff;
+    background: var(--accent);
   }
   .title {
-    font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.2px;
+    font-weight: 650;
+    font-size: 14px;
+    letter-spacing: -0.01em;
   }
   .subtitle {
     font-size: 11.5px;
     color: var(--muted);
   }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .status .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .status.busy {
+    color: var(--text-dim);
+  }
+  .status.busy .dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent-soft);
+    animation: pulse 1.4s ease-out infinite;
+  }
+  @keyframes pulse {
+    0% {
+      box-shadow: 0 0 0 0 var(--accent-soft);
+    }
+    100% {
+      box-shadow: 0 0 0 6px rgba(76, 126, 243, 0);
+    }
+  }
 
+  /* --- Layout --- */
   .body {
     flex: 1;
     display: grid;
-    grid-template-columns: 320px 1fr;
+    grid-template-columns: 328px 1fr;
     min-height: 0;
   }
 
   .panel {
     border-right: 1px solid var(--border);
     background: var(--panel);
-    padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    overflow-y: auto;
+    min-height: 0;
   }
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: var(--s5) var(--s4) var(--s4);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s5);
+  }
+
   .group {
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: var(--s3);
   }
-  .lbl {
+  .steplabel {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    margin: 0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.005em;
+  }
+  .stepnum {
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--elev2);
+    color: var(--text-dim);
     font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
+  }
+  .fieldlabel {
+    font-size: 11px;
     color: var(--muted);
   }
-  .pathrow {
+
+  /* Clickable folder / file rows. */
+  .pathbtn {
     display: flex;
-    gap: 8px;
     align-items: center;
+    gap: var(--s2);
+    width: 100%;
+    text-align: left;
+    background: var(--elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: var(--s2) var(--s2) var(--s2) var(--s3);
+    cursor: pointer;
+    transition:
+      border-color 0.15s,
+      background 0.15s;
+  }
+  .pathbtn:hover {
+    border-color: #363b48;
+    background: var(--elev2);
+  }
+  .pathbtn:active {
+    transform: translateY(1px);
   }
   .path {
     flex: 1;
-    font-size: 12px;
-    background: var(--panel2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 8px 10px;
+    font-size: 12.5px;
+    color: var(--text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    color: #cfd3df;
+  }
+  .path.empty {
+    color: var(--muted);
+  }
+  .pathaction {
+    flex-shrink: 0;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-dim);
+    background: var(--elev2);
+    border-radius: 5px;
+    padding: 4px 9px;
   }
 
+  /* --- Buttons --- */
   .btn {
     border: 1px solid var(--border);
-    background: var(--panel2);
+    background: var(--elev);
     color: var(--text);
-    border-radius: 8px;
-    padding: 8px 14px;
+    border-radius: var(--r-sm);
+    padding: var(--s2) var(--s4);
     font-size: 13px;
     font-weight: 600;
     cursor: pointer;
-    transition: 0.15s;
+    transition:
+      background 0.15s,
+      border-color 0.15s,
+      transform 0.05s;
   }
   .btn:hover:not(:disabled) {
-    border-color: #3a4053;
-    background: #232734;
+    border-color: #363b48;
+    background: var(--elev2);
+  }
+  .btn:active:not(:disabled) {
+    transform: translateY(1px);
   }
   .btn:disabled {
-    opacity: 0.45;
-    cursor: default;
+    opacity: 0.4;
+    cursor: not-allowed;
   }
   .btn.ghost {
-    padding: 8px 12px;
+    background: transparent;
     font-weight: 500;
   }
+  .btn.ghost:hover:not(:disabled) {
+    background: var(--elev);
+  }
+  .btn.full {
+    width: 100%;
+  }
+  .btn.sm {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
   .btn.primary {
-    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    background: var(--accent);
     border-color: transparent;
-    color: white;
-    box-shadow: 0 4px 14px rgba(109, 94, 252, 0.35);
+    color: #fff;
+  }
+  .btn.primary:hover:not(:disabled) {
+    background: var(--accent-press);
+    border-color: transparent;
+  }
+  .btn.secondary {
+    background: var(--elev);
   }
   .btn.stop {
-    background: #c0392b;
+    background: var(--danger);
     border-color: transparent;
-    color: white;
+    color: #fff;
   }
   .btn.stop:hover:not(:disabled) {
-    background: #d0463a;
+    background: #ef6157;
+    border-color: transparent;
   }
-  .textin {
-    width: 100%;
-    box-sizing: border-box;
-    background: var(--panel2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--text);
-    padding: 8px 10px;
-    font-size: 13px;
-    margin-top: 6px;
-  }
-  .textin:focus {
-    outline: none;
-    border-color: var(--accent);
+  .btn.grow {
+    flex: 1;
   }
 
+  /* --- Segmented control --- */
   .segmented {
     display: flex;
-    background: var(--panel2);
+    background: var(--elev);
     border: 1px solid var(--border);
-    border-radius: 9px;
+    border-radius: var(--r-sm);
     padding: 3px;
     gap: 3px;
   }
@@ -926,32 +1096,48 @@
     background: transparent;
     color: var(--muted);
     padding: 7px;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: 5px;
+    font-size: 12.5px;
     font-weight: 600;
     cursor: pointer;
+    transition:
+      color 0.15s,
+      background 0.15s;
+  }
+  .segmented button:hover:not(.active) {
+    color: var(--text-dim);
+    background: var(--elev2);
   }
   .segmented button.active {
     background: var(--accent);
-    color: white;
+    color: #fff;
   }
 
-  .select {
-    background: var(--panel2);
+  /* --- Inputs --- */
+  .select,
+  .textin {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--elev);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 8px;
-    padding: 9px 10px;
+    border-radius: var(--r-sm);
+    padding: var(--s2) var(--s3);
     font-size: 13px;
   }
   .select:disabled {
     opacity: 0.5;
   }
+  .select:focus,
+  .textin:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
 
   .slider {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--s1);
   }
   .sliderhead {
     display: flex;
@@ -961,70 +1147,132 @@
   }
   .sliderhead b {
     color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
   .slider input[type="range"] {
     width: 100%;
     accent-color: var(--accent);
   }
+
   .check {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s2);
     font-size: 13px;
-    color: #cfd3df;
+    color: var(--text-dim);
     cursor: pointer;
   }
   .check input {
     accent-color: var(--accent);
+    width: 15px;
+    height: 15px;
   }
+
   .hint {
+    margin: 0;
     font-size: 11.5px;
+    line-height: 1.5;
     color: var(--muted);
   }
-  .hint b {
-    color: #cfd3df;
+  .hint.err {
+    color: var(--danger);
+  }
+  .hint.kbd {
+    flex-shrink: 0;
   }
 
-  .actions {
-    display: flex;
-    gap: 8px;
-  }
-  .actions .btn {
-    flex: 1;
-  }
-
-  .scancard {
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--panel2);
-    padding: 12px;
+  .attlist {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--s1);
+    max-height: 190px;
+    overflow-y: auto;
+    background: var(--elev);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    padding: var(--s2) var(--s3);
+  }
+
+  /* --- Advanced disclosure --- */
+  .advanced {
+    border-top: 1px solid var(--border-soft);
+    padding-top: var(--s4);
+  }
+  .advanced > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+    user-select: none;
+  }
+  .advanced > summary::-webkit-details-marker {
+    display: none;
+  }
+  .advanced > summary::before {
+    content: "›";
+    display: inline-block;
+    font-size: 15px;
+    color: var(--muted);
+    transition: transform 0.15s;
+  }
+  .advanced[open] > summary::before {
+    transform: rotate(90deg);
+  }
+  .advbody {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s3);
+    padding-top: var(--s4);
+  }
+
+  /* --- Sticky actions --- */
+  .actions {
+    display: flex;
+    gap: var(--s2);
+    padding: var(--s3) var(--s4);
+    border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+
+  /* --- Scan card --- */
+  .scancard {
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    background: var(--elev);
+    padding: var(--s3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--s2);
   }
   .scanrow {
     display: flex;
     justify-content: space-between;
     font-size: 13px;
-    color: #cfd3df;
+    color: var(--text-dim);
   }
   .scanrow b {
     color: var(--text);
+    font-variant-numeric: tabular-nums;
   }
   .dlcs {
-    margin-top: 6px;
+    margin-top: var(--s1);
     border-top: 1px solid var(--border);
-    padding-top: 8px;
+    padding-top: var(--s2);
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: var(--s1);
     max-height: 160px;
     overflow-y: auto;
   }
   .dlc {
     display: flex;
     justify-content: space-between;
-    gap: 8px;
+    gap: var(--s2);
     font-size: 12px;
     color: var(--muted);
   }
@@ -1035,24 +1283,26 @@
   }
   .dlc em {
     font-style: normal;
-    color: #cfd3df;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
   }
 
+  /* --- Stage --- */
   .stage {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    padding: 16px;
-    gap: 14px;
+    padding: var(--s4);
+    gap: var(--s4);
   }
   .preview {
     flex: 1;
     display: grid;
     place-items: center;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--r);
     background:
-      repeating-conic-gradient(#1a1d25 0% 25%, #15171e 0% 50%) 50% / 22px 22px;
+      repeating-conic-gradient(#181b22 0% 25%, #14161c 0% 50%) 50% / 24px 24px;
     min-height: 0;
     overflow: hidden;
   }
@@ -1060,36 +1310,62 @@
     max-width: 92%;
     max-height: 92%;
     object-fit: contain;
-    filter: drop-shadow(0 10px 30px rgba(0, 0, 0, 0.5));
+    filter: drop-shadow(0 12px 32px rgba(0, 0, 0, 0.55));
   }
   .placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--s2);
+    text-align: center;
+    padding: var(--s5);
+  }
+  .ph-icon {
+    font-size: 34px;
+    color: var(--border);
+    line-height: 1;
+  }
+  .ph-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-dim);
+  }
+  .ph-sub {
+    font-size: 12px;
     color: var(--muted);
-    font-size: 13px;
+    max-width: 260px;
   }
 
+  /* --- Progress --- */
   .progress {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--s2);
+    opacity: 0.55;
+    transition: opacity 0.2s;
+  }
+  .progress.on {
+    opacity: 1;
   }
   .bar {
-    height: 8px;
-    background: var(--panel2);
+    height: 6px;
+    background: var(--elev);
     border: 1px solid var(--border);
     border-radius: 999px;
     overflow: hidden;
   }
   .fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--accent), var(--accent2));
-    transition: width 0.2s;
+    background: var(--accent);
+    transition: width 0.25s ease;
   }
   .meta {
     display: flex;
     justify-content: space-between;
+    align-items: center;
     font-size: 12px;
     color: var(--muted);
-    gap: 12px;
+    gap: var(--s3);
   }
   .meta .file {
     overflow: hidden;
@@ -1098,83 +1374,97 @@
   }
   .meta .count {
     flex-shrink: 0;
+    display: flex;
+    gap: var(--s2);
+    font-variant-numeric: tabular-nums;
+  }
+  .meta .frac {
+    color: var(--text-dim);
+  }
+  .meta .ok {
+    color: var(--ok);
+  }
+  .meta .fail {
+    color: var(--danger);
   }
 
+  /* --- Gallery --- */
   .gallery {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding-top: 12px;
+    gap: var(--s3);
+    padding-top: var(--s4);
     border-top: 1px solid var(--border);
   }
   .galleryhead {
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
+    gap: var(--s3);
+    font-size: 12px;
     color: var(--muted);
   }
   .galleryhead .gtitle {
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text);
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
   }
   .filter {
     flex: 1;
     min-width: 0;
-    background: var(--panel2);
+    background: var(--elev);
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: var(--r-sm);
     color: var(--text);
-    padding: 5px 9px;
+    padding: 6px 10px;
     font-size: 12px;
-    text-transform: none;
-    letter-spacing: 0;
   }
   .filter:focus {
     outline: none;
     border-color: var(--accent);
   }
   .nomatch {
-    padding: 14px;
+    padding: var(--s4);
     text-align: center;
   }
   .thumbs {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-    gap: 10px;
+    gap: var(--s3);
     max-height: 300px;
     overflow-y: auto;
-    padding: 10px;
+    padding: var(--s3);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    background: #0b0c10;
+    border-radius: var(--r);
+    background: var(--bg);
   }
   .card {
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    padding: 6px;
-    border: 1px solid var(--border);
-    border-radius: 9px;
-    background: var(--panel);
-    transition: 0.12s;
+    gap: var(--s1);
+    padding: var(--s1);
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    transition:
+      border-color 0.12s,
+      background 0.12s;
+  }
+  .card:hover {
+    background: var(--elev);
   }
   .card.active {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px rgba(109, 94, 252, 0.3);
+    background: var(--accent-soft);
   }
   .thumb {
     aspect-ratio: 1;
     padding: 0;
     border: none;
-    border-radius: 6px;
+    border-radius: 5px;
     overflow: hidden;
     cursor: pointer;
     background:
-      repeating-conic-gradient(#1a1d25 0% 25%, #15171e 0% 50%) 50% / 10px 10px;
+      repeating-conic-gradient(#181b22 0% 25%, #14161c 0% 50%) 50% / 10px 10px;
   }
   .thumb img {
     width: 100%;
@@ -1196,21 +1486,37 @@
     text-align: center;
   }
 
+  /* --- Activity log --- */
+  .logwrap {
+    flex-shrink: 0;
+  }
+  .logwrap > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    padding-bottom: var(--s2);
+    user-select: none;
+  }
+  .logwrap > summary::-webkit-details-marker {
+    display: none;
+  }
   .log {
-    height: 130px;
+    height: 120px;
     overflow-y: auto;
     border: 1px solid var(--border);
-    border-radius: 10px;
-    background: #0b0c10;
-    padding: 10px 12px;
-    font-family: "Cascadia Code", "Consolas", monospace;
+    border-radius: var(--r);
+    background: var(--bg);
+    padding: var(--s2) var(--s3);
+    font-family: "Cascadia Code", Consolas, monospace;
     font-size: 11.5px;
-    line-height: 1.55;
+    line-height: 1.6;
   }
   .logline {
-    color: #b9becb;
+    color: var(--text-dim);
     white-space: pre-wrap;
-    word-break: break-all;
+    word-break: break-word;
   }
   .logline.muted {
     color: var(--muted);
